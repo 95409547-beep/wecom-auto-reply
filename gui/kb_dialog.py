@@ -25,7 +25,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from rag import prompt_store as ps
-from gui.theme import COLORS, SPACE, apply_theme, dialog_geometry, font, px, scale
+from gui.theme import COLORS, SPACE, apply_theme, card, card_body, dialog_geometry, font, px, scale
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class KbDialog:
     def _build(self):
         # 底部先建：提示词页初始化时要用到 self._status
         bottom = ttk.Frame(self.win)
-        bottom.pack(fill=tk.X, side=tk.BOTTOM, padx=SPACE["lg"], pady=SPACE["sm"])
+        bottom.pack(fill=tk.X, side=tk.BOTTOM, padx=px(22), pady=SPACE["sm"])
         self._status = ttk.Label(bottom, text="", foreground=COLORS["success"])
         self._status.pack(side=tk.LEFT)
         if not self._embedded:
@@ -104,7 +104,7 @@ class KbDialog:
             self._build_archive_bar()
 
         nb = ttk.Notebook(self.win)
-        nb.pack(fill=tk.BOTH, expand=True, padx=SPACE["lg"], pady=(SPACE["sm"], 0))
+        nb.pack(fill=tk.BOTH, expand=True, padx=px(22), pady=(px(12), 0))
         self._nb = nb
 
         # ══ 提示词页 ══
@@ -346,33 +346,35 @@ class KbDialog:
     def _build_archive_bar(self):
         from rag import archives
 
-        bar = ttk.LabelFrame(self.win, text="资料库档案")
-        bar.pack(fill=tk.X, padx=SPACE["lg"], pady=(SPACE["md"], 0))
-        row = ttk.Frame(bar)
-        row.pack(fill=tk.X, padx=8, pady=6)
+        bar = card(self.win)
+        bar.pack(fill=tk.X, padx=px(22), pady=(px(14), 0))
+        row = card_body(bar)
+        actions = ttk.Frame(row, style="Card.TFrame")
+        actions.pack(side=tk.RIGHT, padx=px(5), pady=px(4))
+        for label, action in (("新建", self._archive_new), ("重命名", self._archive_rename),
+                              ("复制档案", self._archive_copy), ("删除", self._archive_delete)):
+            ttk.Button(actions, text=label, style="Danger.TButton" if label == "删除" else "TButton",
+                       command=action).pack(side=tk.LEFT, padx=(px(4), 0))
+        ttk.Label(row, text="资料库档案", style="H3.TLabel").pack(side=tk.LEFT, padx=px(7))
 
         self._archives = archives.all_archives()
         self._arch_combo = ttk.Combobox(
-            row, state="readonly", width=24,
+            row, state="readonly", width=17,
             values=[a.get("name", a["id"]) for a in self._archives])
         active = archives.active_id()
         idx = next((i for i, a in enumerate(self._archives) if a["id"] == active), 0)
         self._arch_combo.current(idx)
-        self._arch_combo.pack(side=tk.LEFT)
+        self._arch_combo.pack(side=tk.LEFT, padx=px(4))
         self._arch_combo.bind("<<ComboboxSelected>>", self._on_archive_change)
 
-        ttk.Button(row, text="新建", command=self._archive_new).pack(side=tk.LEFT, padx=(6, 2))
-        ttk.Button(row, text="重命名", command=self._archive_rename).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="复制档案", command=self._archive_copy).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="删除", command=self._archive_delete).pack(side=tk.LEFT, padx=2)
-        self._arch_info = ttk.Label(row, text="", foreground=COLORS["ink_mute"])
-        self._arch_info.pack(side=tk.LEFT, padx=10)
+        self._arch_info = ttk.Label(row, text="", style="Mute.TLabel")
+        self._arch_info.pack(side=tk.LEFT, padx=px(6))
         self._arch_tip()
 
     def _arch_tip(self):
         from rag import archives
         n = len(self._archives)
-        self._arch_info.config(text=f"{n} 个独立档案 · 切换后立即生效")
+        self._arch_info.config(text=f"{n} 个档案")
         if not self._embedded:
             self.win.title(f"知识库 —— {archives.active_name()}")
 
@@ -512,18 +514,19 @@ class KbDialog:
 
     def _build_kb_page(self, page):
         # ── 上传区 ────────────────────────────────────────────────
-        up = ttk.LabelFrame(page, text="上传资料（txt / md / csv / Excel / Word）")
-        up.pack(fill=tk.X, padx=10, pady=(10, 4))
-        r1 = ttk.Frame(up)
-        r1.pack(fill=tk.X, padx=8, pady=6)
-        ttk.Button(r1, text="选择文件…", style="SegmentOn.TButton",
+        up = card(page)
+        up.pack(fill=tk.X, pady=(0, px(10)))
+        r1 = ttk.Frame(card_body(up), style="Card.TFrame")
+        r1.pack(fill=tk.X, padx=px(6), pady=px(5))
+        ttk.Label(r1, text="导入资料", style="H3.TLabel").pack(side=tk.LEFT, padx=(0, px(10)))
+        ttk.Button(r1, text="选择文件…", style="Secondary.TButton",
                    command=self._kb_pick_files).pack(side=tk.LEFT)
         # AI 整理：陈述句/表格 → 问答。整理结果先预览，勾选后才写入。
         ttk.Button(r1, text="用 AI 整理成问答…", style="Segment.TButton",
                    command=self._kb_ai_ingest).pack(side=tk.LEFT, padx=6)
         ttk.Button(r1, text="重建索引", style="Ghost.TButton",
                    command=self._kb_rebuild).pack(side=tk.LEFT)
-        self._kb_up_status = ttk.Label(r1, text="", foreground=COLORS["ink_mute"])
+        self._kb_up_status = ttk.Label(r1, text="", style="Mute.TLabel")
         self._kb_up_status.pack(side=tk.LEFT, padx=10)
 
         top = ttk.Frame(page)
@@ -561,17 +564,21 @@ class KbDialog:
         # 问题和答案**必须分两列**：挤在一列里 Treeview 只显示第一行，
         # 用户看到满屏"客户问题"，会以为答案根本没导进来。
         cols = ("no", "question", "answer")
-        self._kb_tree = ttk.Treeview(page, columns=cols, show="headings", height=15)
+        results = card(page)
+        results.pack(fill=tk.BOTH, expand=True, pady=(px(4), 0))
+        table = card_body(results)
+        self._kb_tree = ttk.Treeview(table, columns=cols, show="headings", height=12)
         for c, t, w in (("no", "#", 40), ("question", "客户问题", 330),
                         ("answer", "销售回答", 420)):
-            self._kb_tree.heading(c, text=t)
-            self._kb_tree.column(c, width=w, anchor="w")
+            align = "center" if c == "no" else "w"
+            self._kb_tree.heading(c, text=t, anchor=align)
+            self._kb_tree.column(c, width=px(w), anchor=align, stretch=c != "no")
         self._kb_tree.tag_configure("plain", foreground="#555")
         self._kb_tree.bind("<Double-1>", lambda e: self._kb_view())
-        sb = ttk.Scrollbar(page, orient=tk.VERTICAL, command=self._kb_tree.yview)
+        sb = ttk.Scrollbar(table, orient=tk.VERTICAL, command=self._kb_tree.yview)
         self._kb_tree.configure(yscrollcommand=sb.set)
-        sb.pack(side=tk.RIGHT, fill=tk.Y, pady=4, padx=(0, 10))
-        self._kb_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=4)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._kb_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._kb_empty = tk.Label(self._kb_tree, background=COLORS["canvas"],
                                   foreground=COLORS["ink_mute"], font=font("body"))
         self._kb_load(0)

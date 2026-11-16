@@ -6,6 +6,7 @@ import pytest
 from gui.dashboard import DashboardWindow
 from gui.kb_dialog import KbDialog
 from gui.main_window import MainWindow
+from gui.theme import px
 
 
 def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
@@ -33,6 +34,10 @@ def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
         min_width, min_height = root.minsize()
         root.geometry(f"{min_width}x{min_height}")
         root.update()
+        window._after_resize()
+        root.update_idletasks()
+        assert window._compact_navigation
+        assert window._sidebar.grid_info()["columnspan"] == 2
         assert window._current_page == "工作台"
         assert set(window._page_frames) == {"工作台"}
 
@@ -70,6 +75,16 @@ def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
         assert kb._nb.tab(kb._nb.select(), "text") == "提示词"
         assert window._footer.winfo_viewable()
         assert window._settings_btn.winfo_viewable()
+
+        if root.winfo_screenwidth() >= px(1120):
+            root.geometry(f"{px(1120)}x{min_height}")
+            root.update()
+            window._after_resize()
+            root.update_idletasks()
+            assert not window._compact_navigation
+            assert window._content.winfo_x() > window._sidebar.winfo_x()
+            assert kb._nb.winfo_viewable()
+            assert kb._text.get("1.0", "end-1c") == "未保存的提示词"
 
         window._navigation["工作台"].invoke()
         root.update()

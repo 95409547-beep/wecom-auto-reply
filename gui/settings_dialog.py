@@ -34,7 +34,7 @@ from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from config import settings_store as store
-from gui.theme import (COLORS, SPACE, apply_theme, dialog_geometry, font, hint,
+from gui.theme import (COLORS, SPACE, apply_theme, card, card_body, dialog_geometry, font, hint,
                        px, scroll_area)
 from rag.llm_client import DEFAULT_BASE_URL, DEFAULT_MODEL, PRESETS
 
@@ -108,10 +108,9 @@ class SettingsDialog:
 
     def _section(self, parent, title: str) -> tk.Frame:
         """一节：白底卡片 + 标题（比 ttk.LabelFrame 更贴合设计系统）。"""
-        outer = tk.Frame(parent, background=COLORS["hairline"])
-        outer.pack(fill=tk.X, padx=SPACE["lg"], pady=(SPACE["md"], 0))
-        box = tk.Frame(outer, background=COLORS["canvas"])
-        box.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        outer = card(parent)
+        outer.pack(fill=tk.X, padx=px(20), pady=(px(12), 0))
+        box = card_body(outer)
         tk.Label(box, text=title, font=font("h3", True), background=COLORS["canvas"],
                  foreground=COLORS["ink"], anchor="w").pack(
             anchor="w", padx=SPACE["lg"], pady=(SPACE["md"], SPACE["xs"]))

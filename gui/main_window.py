@@ -20,8 +20,7 @@ from tkinter import ttk, messagebox
 from typing import Callable, Dict, List, Optional
 
 from app_version import APP_VERSION, version_label
-from gui.theme import (COLORS, SPACE, apply_theme, detect_dpi_scale, font, px,
-                       scale as _ui_scale)
+from gui.theme import COLORS, SPACE, apply_theme, card, card_body, font, px, ui_icon
 
 logger = logging.getLogger(__name__)
 
@@ -203,16 +202,15 @@ class MainWindow:
         self.root.bind("<Configure>", self._on_root_configure)
         self.root.configure(background=COLORS["canvas_soft"])
 
-        # 顶部标题栏
-        self._create_header()
+        self._shell = tk.Frame(self.root, background=COLORS["hairline"])
+        self._shell.pack(fill=tk.BOTH, expand=True)
+        self._content = tk.Frame(self._shell, background=COLORS["canvas_soft"])
         self._create_navigation()
-
-        # 状态横幅：未配置 / 目标软件不在 / 正常，都显示在这里
+        self._create_header()
         self._create_banner()
-
-        # Persistent status at the bottom, with one content view above it.
         self._create_footer()
-        self._page_host = tk.Frame(self.root, background=COLORS["canvas_soft"])
+
+        self._page_host = tk.Frame(self._content, background=COLORS["canvas_soft"])
         self._page_host.pack(fill=tk.BOTH, expand=True)
         workbench = tk.Frame(self._page_host, background=COLORS["canvas_soft"])
         self._create_tabs(workbench)
@@ -221,100 +219,46 @@ class MainWindow:
         self._page_views = {}
         self._current_page = "工作台"
 
-        # ★ 按内容自适应尺寸：换主题后标题与按钮都变宽了，
-        #   在 125%/150% 缩放的屏幕上固定 720px 会把「知识库/设置」裁掉
-        #   （打包版实测界面右边被切）。这里量一次控件要求的尺寸再定窗口大小。
         self._fit_window(sw)
         self.root.deiconify()
 
-    def _fit_window(self, screen_w: int):
-        """窗口保持**紧凑**：够装内容就够，但不无限撑大；放不下时由头部换行解决。
-
-        ★ 上一版为了"按钮不被裁"改成按内容无限撑开，结果在 150% 缩放的屏幕上
-          撑到了 1600+ px（用户反馈"主页面怎么变这么大"）。正确做法是**两条一起**：
-          ① 窗口有个紧凑上限；② 装不下时头部**换行重排**（见 _reflow_header）。
-        """
-        try:
-            self.root.update_idletasks()
-            screen_h = self.root.winfo_screenheight()
-        except Exception:
-            return
-        # 紧凑上限：头部会换行（_reflow_header），所以不必为了塞下按钮把窗口撑宽。
-        w = min(px(1040), screen_w - px(32))
-        h = min(px(720), screen_h - px(96))
-        x = max(0, (screen_w - w) // 2)
-        y = max(0, (screen_h - h) // 4)
+    def _fit_window(self, screen_w):
+        w = min(px(1180), screen_w - px(32))
+        sh = self.root.winfo_screenheight()
+        h = min(px(760), sh - px(96))
+        x, y = (screen_w - w) // 2, (sh - h) // 4
         self.root.geometry(f"{w}x{h}+{x}+{y}")
-        # ★ 多次重排：首次（80ms）此时窗口可能还没真正映射，winfo_width() 不可靠；
-        #   映射之后（400ms / 1.2s）再用**真实几何**复核一遍 —— 打包版在 150% 缩放
-        #   的机器上就是"按请求宽度算能放下、实际放不下"，把「知识库/设置」裁到了屏幕外。
-        for delay in (80, 400, 1200):
-            self.root.after(delay, self._reflow_header)
+        self._layout_shell(w)
 
-    def _header_bar_overflows(self) -> bool:
-        """按钮条实际画出来之后，右边缘有没有超出窗口？（比 reqwidth 可靠）"""
-        try:
-            self.root.update_idletasks()
-            right = self._btn_bar.winfo_x() + self._btn_bar.winfo_width()
-            return right > self.root.winfo_width() - px(SPACE["sm"])
-        except Exception:
-            return False
-
-    def _reflow_header(self):
-        """窄窗口时把次要按钮**换到第二行** —— 而不是让它们被裁掉/盖住。
-
-        用 grid 而不是 pack：pack 要求控件必须 pack 在自己的 master 里，
-        没法"从第一行挪到第二行"；grid 只要还在同一个 master 里，
-        grid_configure 就能换行换列（踩过一次：can't pack ... inside ...）。
-        """
-        try:
-            self.root.update_idletasks()
-            avail = self.root.winfo_width() - px(2 * SPACE["md"]) - px(8)
-            need = (self._title_label.winfo_reqwidth()
-                    + self._btn_bar.winfo_reqwidth() + px(SPACE["lg"]))
-        except Exception:
+    def _layout_shell(self, width):
+        """Use a vertical sidebar when the content can keep a comfortable width."""
+        compact = width < px(970)
+        if compact == getattr(self, "_compact_navigation", None):
             return
-        inline = need <= avail
-        # ★ 已经在第一行、但**实际画出来**右边缘超出窗口 → 强制换行。
-        #   为什么需要这道：`winfo_reqwidth()` 是按控件请求宽度算的，在 DPI 缩放
-        #   不一致的环境里会"算着能放下、实际放不下" —— 打包版实测「知识库/设置」
-        #   被裁到窗口外。真实几何比请求宽度可靠。
-        if inline and getattr(self, "_header_inline", None) is True \
-                and self._header_bar_overflows():
-            self._wrap_above = self.root.winfo_width()
-            inline = False
-        elif inline and getattr(self, "_wrap_above", 0) \
-                and self.root.winfo_width() <= self._wrap_above + px(40):
-            # 还没明显变宽，别又试回第一行（否则 1.2s 那次复核会把它翻回来）
-            inline = False
-        # 布局数值落日志：这类"按钮被裁"的问题只有真实数字能定位
-        # （用户反馈过一次、打包版实测又一次，都靠这几个数才找对原因）。
-        # 只在数值变化时记一行 —— 拖窗口时不会刷屏。
-        try:
-            import logging as _logging
-            sig = (self.root.winfo_width(), avail, need,
-                   self._btn_bar.winfo_width(), inline)
-            if sig != getattr(self, "_layout_sig", None):
-                self._layout_sig = sig
-                _logging.getLogger(__name__).info(
-                    "头部布局: 窗口=%d 可用=%d 需要=%d 按钮条=%d 右边缘=%d "
-                    "第一行=%s 缩放=%.2f",
-                    self.root.winfo_width(), avail, need,
-                    self._btn_bar.winfo_width(),
-                    self._btn_bar.winfo_x() + self._btn_bar.winfo_width(),
-                    inline, _ui_scale())
-        except Exception:
-            pass
-
-        if inline == getattr(self, "_header_inline", None):
-            return
-        self._header_inline = inline
-        if inline:
-            self._btn_bar.grid_configure(row=0, column=1, columnspan=1, sticky="e",
-                                         pady=(SPACE["sm"], SPACE["sm"]))
+        self._compact_navigation = compact
+        self._sidebar.grid_forget()
+        self._content.grid_forget()
+        self._brand.pack_forget()
+        for button in self._navigation.values():
+            button.pack_forget()
+        self._shell.grid_columnconfigure(0, weight=int(compact))
+        self._shell.grid_columnconfigure(1, weight=int(not compact))
+        self._shell.grid_rowconfigure(0, weight=int(not compact))
+        self._shell.grid_rowconfigure(1, weight=int(compact))
+        if compact:
+            self._sidebar.pack_propagate(True)
+            self._sidebar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 1))
+            self._content.grid(row=1, column=0, columnspan=2, sticky="nsew")
+            for button in self._navigation.values():
+                button.pack(side=tk.LEFT, padx=(px(8), 0), pady=px(6))
         else:
-            self._btn_bar.grid_configure(row=1, column=0, columnspan=2, sticky="e",
-                                         pady=(0, SPACE["sm"]))
+            self._sidebar.configure(width=px(184))
+            self._sidebar.pack_propagate(False)
+            self._sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 1))
+            self._content.grid(row=0, column=1, sticky="nsew")
+            self._brand.pack(fill=tk.X, padx=px(14), pady=(px(16), px(22)))
+            for button in self._navigation.values():
+                button.pack(fill=tk.X, padx=px(10), pady=(0, px(4)))
 
     def _on_root_configure(self, event=None):
         """窗口被拖动改大小 → 防抖后重排头部 + 按比例分表格列。"""
@@ -329,14 +273,14 @@ class MainWindow:
 
     def _after_resize(self):
         self._resize_job = None
-        self._reflow_header()
+        self._layout_shell(self.root.winfo_width())
         self._fit_tree_columns()
         self._fit_banner()
 
     def _fit_banner(self):
         """横幅文字按窗口宽度换行 —— 单行不换行时右边会被硬切（"…或点「设置」改配"）。"""
         try:
-            w = self.root.winfo_width()
+            w = self._content.winfo_width()
             if w > 1:
                 self._banner.configure(wraplength=max(px(240), w - px(36)))
         except Exception:
@@ -365,51 +309,38 @@ class MainWindow:
             pass
 
     def _create_header(self):
-        """创建顶部标题栏（按 gui/theme.py 的设计系统：白底 + 发丝线分隔）。
-
-        标题与按钮用 **grid** 摆：窄窗口时按钮整组换到第二行（见 _reflow_header），
-        pack 做不到这件事。
-        """
-        header = tk.Frame(self.root, background=COLORS["canvas"])
-        header.pack(fill=tk.X)
-        self._header = header
-        header.grid_columnconfigure(0, weight=1)      # 标题列可伸缩
-        header.grid_columnconfigure(1, weight=0)      # 按钮列按需
-
-        self._title_label = tk.Label(header, text="企业微信智能客服", font=font("h1", True),
-                                     background=COLORS["canvas"],
-                                     foreground=COLORS["ink"])
-        self._title_label.grid(row=0, column=0, sticky="w",
-                               padx=(SPACE["md"], 0), pady=(SPACE["sm"], SPACE["sm"]))
-
-        # 按钮整组放在一个容器里：宽度不够时整组换到第二行（见 _reflow_header）
-        btn_frame = tk.Frame(header, background=COLORS["canvas"])
-        btn_frame.grid(row=0, column=1, sticky="e",
-                       padx=(0, SPACE["md"]), pady=(SPACE["sm"], SPACE["sm"]))
-        self._btn_bar = btn_frame
-        self._header_inline = True
-
-        self._pause_btn = ttk.Button(
-            btn_frame, text="停止" if self._autostart else "开始",
-            style="Primary.TButton", command=self._toggle_pause)
-        self._pause_btn.pack(side=tk.LEFT, padx=(0, SPACE["xs"]))
-
-        self._settings_btn = ttk.Button(btn_frame, text="设置", style="Ghost.TButton",
+        toolbar = tk.Frame(self._content, background=COLORS["canvas"])
+        toolbar.pack(fill=tk.X)
+        actions = tk.Frame(toolbar, background=COLORS["canvas"])
+        actions.pack(side=tk.RIGHT, padx=px(22), pady=px(13))
+        self._settings_btn = ttk.Button(actions, text="设置", style="Ghost.TButton",
                                         command=self._on_settings_clicked)
-        self._settings_btn.pack(side=tk.LEFT, padx=(SPACE["xs"], 0))
+        self._settings_btn.pack(side=tk.LEFT, padx=(0, px(8)))
+        self._pause_btn = ttk.Button(
+            actions, text="停止" if self._autostart else "开始",
+            width=6, style="Primary.TButton", command=self._toggle_pause)
+        self._pause_btn.pack(side=tk.LEFT)
+        self._title_label = tk.Label(toolbar, text="工作台", font=font("h1", True),
+                                     background=COLORS["canvas"], foreground=COLORS["ink"])
+        self._title_label.pack(side=tk.LEFT, padx=px(22), pady=px(14))
+        tk.Frame(self._content, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
 
     def _create_navigation(self):
-        nav = tk.Frame(self.root, background=COLORS["canvas"])
-        nav.pack(fill=tk.X)
+        self._sidebar = tk.Frame(self._shell, background=COLORS["sidebar"])
+        self._brand = tk.Frame(self._sidebar, background=COLORS["sidebar"])
+        self._brand_icon = ui_icon(self.root, "conversation", 32, tile=True)
+        tk.Label(self._brand, image=self._brand_icon, background=COLORS["sidebar"]).pack(
+            side=tk.LEFT, padx=(0, px(8)))
+        tk.Label(self._brand, text="企业微信客服", font=font("h3", True),
+                 background=COLORS["sidebar"], foreground=COLORS["ink"]).pack(side=tk.LEFT)
         self._navigation = {}
-        for name in ("工作台", "数据", "知识库"):
-            btn = ttk.Button(nav, text=name, width=9,
-                             style="PageOn.TButton" if name == "工作台" else "Page.TButton",
-                             command=lambda page=name: self._show_page(page))
-            btn.pack(side=tk.LEFT, padx=(SPACE["lg"] if not self._navigation else SPACE["xs"], 0),
-                     pady=(0, SPACE["sm"]))
-            self._navigation[name] = btn
-        tk.Frame(self.root, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
+        self._navigation_icons = {}
+        for name, glyph in (("工作台", "inbox"), ("数据", "chart"), ("知识库", "book")):
+            icon = self._navigation_icons[name] = ui_icon(self.root, glyph)
+            self._navigation[name] = ttk.Button(
+                self._sidebar, text=f"  {name}", image=icon, compound="left",
+                style="PageOn.TButton" if name == "工作台" else "Page.TButton",
+                command=lambda page=name: self._show_page(page))
 
     def _show_page(self, name):
         if name == self._current_page:
@@ -429,6 +360,7 @@ class MainWindow:
         self._page_frames[self._current_page].pack_forget()
         self._page_frames[name].pack(fill=tk.BOTH, expand=True)
         self._current_page = name
+        self._title_label.config(text="数据看板" if name == "数据" else name)
         for label, btn in self._navigation.items():
             btn.configure(style="PageOn.TButton" if label == name else "Page.TButton")
         if existing is not None:
@@ -445,12 +377,12 @@ class MainWindow:
         原来的坑：目标软件没打开时扫描会静默 return，界面还写着"运行中"，
         用户完全不知道问题在哪。
         """
-        self._banner = tk.Label(self.root, text="", anchor="w", justify="left",
+        self._banner = tk.Label(self._content, text="", anchor="w", justify="left",
                                 wraplength=px(600),
                                 font=font("small"), foreground=COLORS["warning"],
                                 background=COLORS["warning_bg"],
                                 padx=SPACE["md"], pady=SPACE["sm"])
-        self._banner.pack(fill=tk.X, padx=SPACE["md"], pady=(0, SPACE["xs"]))
+        self._banner.pack(fill=tk.X, padx=px(22), pady=(px(12), 0))
 
     def set_banner(self, text: str, level: str = "warn"):
         """更新横幅。level: warn=黄 / error=红 / ok=绿（空文本＝隐藏）。"""
@@ -465,8 +397,8 @@ class MainWindow:
                 self._banner.pack_forget()
                 return
             self._banner.config(text=text, background=bg, foreground=fg)
-            self._banner.pack(fill=tk.X, before=self._footer, padx=SPACE["lg"],
-                              pady=(SPACE["sm"], 0))
+            self._banner.pack(fill=tk.X, before=self._footer, padx=px(22),
+                              pady=(px(12), 0))
         except Exception:
             pass
 
@@ -496,7 +428,7 @@ class MainWindow:
     def _create_tabs(self, parent):
         """创建标签页"""
         tab_frame = tk.Frame(parent, background=COLORS["canvas_soft"])
-        tab_frame.pack(fill=tk.BOTH, expand=True, padx=SPACE["lg"], pady=SPACE["md"])
+        tab_frame.pack(fill=tk.BOTH, expand=True, padx=px(22), pady=px(14))
 
         # 标签栏
         tab_bar = tk.Frame(tab_frame, background=COLORS["canvas_soft"])
@@ -528,21 +460,18 @@ class MainWindow:
             b.configure(style="SegmentOn.TButton" if name == self._current_tab
                         else "Segment.TButton")
 
-        # ── message list treeview ──────────────────────────────────
-
-        self._list_frame = ttk.Frame(tab_frame)
+        surface = card(tab_frame)
+        surface.pack(fill=tk.BOTH, expand=True)
+        body = card_body(surface)
+        self._list_frame = ttk.Frame(body, style="Card.TFrame")
         self._list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
         columns = ("time", "customer", "message", "action")
         self._tree = ttk.Treeview(self._list_frame, columns=columns, show="headings")
-        self._tree.heading("time", text="时间")
-        self._tree.heading("customer", text="客户")
-        self._tree.heading("message", text="消息")
-        self._tree.heading("action", text="处理结果")
-        self._tree.column("time", width=110)
-        self._tree.column("customer", width=120)
-        self._tree.column("message", width=300)
-        self._tree.column("action", width=100)
+        for column, label, width in (("time", "时间", 110), ("customer", "客户", 120),
+                                     ("message", "消息", 300), ("action", "处理结果", 100)):
+            self._tree.heading(column, text=label, anchor="w")
+            self._tree.column(column, width=px(width), anchor="w")
 
         scrollbar = ttk.Scrollbar(self._list_frame, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=scrollbar.set)
@@ -557,29 +486,23 @@ class MainWindow:
         # ── 待人工列表（点「待人工」标签时显示）──────────────────────
         # 置信度不足的消息会进这里，附带 AI 推荐回复，可【发送】或【编辑】
 
-        self._pending_frame = ttk.Frame(tab_frame)
+        self._pending_frame = ttk.Frame(body, style="Card.TFrame")
 
         p_columns = ("ptime", "pcustomer", "pmsg", "preply", "pconf", "paction")
         self._pending_tree = ttk.Treeview(self._pending_frame, columns=p_columns,
-                                          show="headings")
-        self._pending_tree.heading("ptime", text="时间")
-        self._pending_tree.heading("pcustomer", text="客户")
-        self._pending_tree.heading("pmsg", text="客户消息")
-        self._pending_tree.heading("preply", text="AI 推荐回复")
-        self._pending_tree.heading("pconf", text="置信度")
-        self._pending_tree.heading("paction", text="")
-        self._pending_tree.column("ptime", width=50)
-        self._pending_tree.column("pcustomer", width=90)
-        self._pending_tree.column("pmsg", width=170)
-        self._pending_tree.column("preply", width=230)
-        self._pending_tree.column("pconf", width=55)
-        self._pending_tree.column("paction", width=0)  # hidden: 绑定用客户名
+                                          displaycolumns=p_columns[:-1], show="headings")
+        for column, label, width in (("ptime", "时间", 50), ("pcustomer", "客户", 90),
+                                     ("pmsg", "客户消息", 170), ("preply", "AI 推荐回复", 230),
+                                     ("pconf", "置信度", 55)):
+            align = "center" if column == "pconf" else "w"
+            self._pending_tree.heading(column, text=label, anchor=align)
+            self._pending_tree.column(column, width=px(width), anchor=align)
 
         p_scrollbar = ttk.Scrollbar(self._pending_frame, orient=tk.VERTICAL,
                                     command=self._pending_tree.yview)
         self._pending_tree.configure(yscrollcommand=p_scrollbar.set)
 
-        pending_btn_frame = ttk.Frame(self._pending_frame)
+        pending_btn_frame = ttk.Frame(self._pending_frame, style="Card.TFrame")
         self._pending_stats_label = ttk.Label(
             pending_btn_frame, text="共 0 条待人工", style="Mute.TLabel")
         self._pending_stats_label.pack(side=tk.LEFT)
@@ -590,7 +513,7 @@ class MainWindow:
         ttk.Button(pending_btn_frame, text="忽略", style="Ghost.TButton",
                    command=self._handle_pending_ignore).pack(side=tk.RIGHT)
 
-        pending_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(SPACE["sm"], 0))
+        pending_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=px(8), pady=px(8))
         self._pending_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         p_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._pending_empty = self._empty_label(self._pending_tree, "当前没有待人工处理的消息")
@@ -604,12 +527,16 @@ class MainWindow:
 
     @staticmethod
     def _empty_label(tree, text):
-        return tk.Label(tree, text=text, font=font("body"), background=COLORS["canvas"],
-                        foreground=COLORS["ink_mute"])
+        icon = ui_icon(tree, "inbox", 36, tile=True)
+        label = tk.Label(tree, text=f"\n{text}", image=icon, compound="top",
+                         font=font("h3", True), background=COLORS["canvas"],
+                         foreground=COLORS["ink_mute"])
+        label._icon = icon
+        return label
 
     def _create_footer(self):
         """Always show service status and the window pin control."""
-        self._footer = tk.Frame(self.root, background=COLORS["canvas"])
+        self._footer = tk.Frame(self._content, background=COLORS["canvas"])
         self._footer.pack(fill=tk.X, side=tk.BOTTOM)
         tk.Frame(self._footer, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
 

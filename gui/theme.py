@@ -1,61 +1,39 @@
 # gui/theme.py
-"""设计系统（单一事实来源）：颜色 / 字号 / 间距 / 圆角 + ttk 样式 + 常用控件。
-
-**设计参考**：`VoltAgent/awesome-design-md` 里的 Stripe 与 Linear 两套规范。
-* 底色与正文取自 **Stripe**：白画布 `#ffffff`、冷白底 `#f6f9fc`、深海军蓝正文
-  `#0d253d`（**不用纯黑**）、发丝线 `#e3e8ee`、靛蓝主色 `#533afd`。
-  选浅色是因为这个软件是店主白天在店里用的，浅色更友好，表格与数字也更清楚
-  （Stripe 那套规范自己写着"dashboard 才翻成深色"，我们不做深色）。
-* 结构与密度取自 **Linear**：surface 分层（画布 → 卡片）、发丝线分隔、紧凑行高、
-  6–8px 圆角、正文用中等字号而不是大字号。
-* 间距严格走 **8px 栅格**（2/4/8/12/16/24/32），不出现 5px、7px、13px 这种随手值。
-
-**tkinter 的先天限制与我们的近似做法**（这条很关键，不然会照着 web 规范写出四不像）：
-* 没有圆角、没有阴影、没有渐变 → 圆角用 Canvas 自绘（`rounded_rect`），
-  阴影用"发丝线边框 + 略深的底色"代替（`card()`）；
-* 字重只有 normal/bold（没有 300/500）→ 层级靠**字号 + 颜色**做，不靠字重；
-* 中文字体在 Windows 上固定用「微软雅黑」，不要用 Inter（中文会掉回宋体，很丑）；
-* ttk 默认的 `vista` 主题**不响应大部分颜色配置** → 统一切到 `clam` 再逐类上色。
-
-用法：
-    from gui.theme import apply_theme, card, section_title, kpi_card, COLORS
-    apply_theme(root)            # 在创建窗口之后、创建控件之前调一次
-"""
+"""Shared colours, typography and controls for the Windows desktop UI."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
 
+from PIL import Image, ImageDraw, ImageTk
+
 # ── 颜色（取自 Stripe 规范，另按需要补了浅底与语义色）────────────────────────
 COLORS = {
-    # 表面
-    "canvas": "#ffffff",          # 卡片/内容底
-    "canvas_soft": "#f6f9fc",     # 页面底（比卡片略冷）
-    "canvas_sunken": "#eef2f7",   # 更沉的底（用于表头、分区带）
-    "hairline": "#e3e8ee",        # 1px 分隔线/边框
-    "hairline_strong": "#cfd7df", # 需要更清楚的边（输入框）
-    # 文字（深海军蓝系，不用纯黑）
-    "ink": "#0d253d",
-    "ink_secondary": "#273951",
-    "ink_mute": "#64748d",
-    "ink_faint": "#8a94a6",
+    "canvas": "#ffffff",
+    "canvas_soft": "#f5f5f7",
+    "canvas_sunken": "#ededf0",
+    "sidebar": "#eef0f4",
+    "hairline": "#e3e4e9",
+    "hairline_strong": "#cbced6",
+    "ink": "#1d1d1f",
+    "ink_secondary": "#373941",
+    "ink_mute": "#636675",
+    "ink_faint": "#6b6e7b",
     "on_primary": "#ffffff",
-    # 品牌/强调：靛蓝只用于**主要动作**与强调，不拿来做正文色
-    "primary": "#533afd",
-    "primary_deep": "#4434d4",
-    "primary_press": "#2e2b8c",
-    "primary_soft": "#665efd",
-    "primary_subtle": "#eef0fe",  # 浅底：选中行/hover/标签底色
-    # 语义色（文字色都压暗过，保证在白底上够清楚）
-    "success": "#0f7b46",
-    "success_bg": "#e9f6ee",
-    "warning": "#8a5a17",
-    "warning_bg": "#fdf4e3",
-    "danger": "#b3244a",
-    "danger_bg": "#fdeef2",
-    "info": "#1f5f9e",
-    "info_bg": "#eaf2fb",
+    "primary": "#006bd6",
+    "primary_deep": "#0056ad",
+    "primary_press": "#004486",
+    "primary_soft": "#518fd2",
+    "primary_subtle": "#e4efff",
+    "success": "#187343",
+    "success_bg": "#e8f6ee",
+    "warning": "#7a530a",
+    "warning_bg": "#fff4dc",
+    "danger": "#a2263b",
+    "danger_bg": "#fbecef",
+    "info": "#145faa",
+    "info_bg": "#e8f2fd",
 }
 
 FONT_FAMILY = "微软雅黑"
@@ -108,8 +86,8 @@ def detect_dpi_scale(root: tk.Misc) -> float:
 #   缩放只由我们自己控制一次，尺寸可预测。
 SIZES = {
     "kpi": 28,       # 大数字
-    "h1": 19,        # 页面标题
-    "h2": 16,        # 卡片标题
+    "h1": 24,        # 页面标题
+    "h2": 18,        # 卡片标题
     "h3": 14,        # 小节标题
     "body": 13,      # 正文
     "small": 12,     # 辅助说明
@@ -127,6 +105,111 @@ def font(size_key: str = "body", bold: bool = False):
 SPACE = {"xxs": 2, "xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32}
 
 RADIUS = {"card": 8, "control": 6, "pill": 999}   # 自绘圆角用
+
+
+def _control_plate(master, radius, fill, border=None):
+    size = 2 * radius + 3
+    image = Image.new("RGBA", (3 * size, 3 * size))
+    ImageDraw.Draw(image).rounded_rectangle(
+        (0, 0, 3 * size - 1, 3 * size - 1), radius=3 * radius,
+        fill=fill, outline=border, width=3)
+    return ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=master)
+
+
+def _configure_buttons(root, style):
+    """Give ttk buttons rounded, stretchable backgrounds and native focus/input."""
+    c = COLORS
+    # Default and selected controls share the same geometry and keyboard layout.
+    specs = {
+        "TButton": (c["canvas"], c["canvas_sunken"], c["hairline"], c["ink"], False),
+        "Primary.TButton": (c["primary"], c["primary_deep"], None, c["on_primary"], True),
+        "Secondary.TButton": (c["canvas"], c["primary_subtle"], c["hairline"], c["primary_deep"], False),
+        "Ghost.TButton": (c["canvas_sunken"], c["hairline"], None, c["ink_secondary"], False),
+        "Danger.TButton": (c["canvas"], c["danger_bg"], None, c["danger"], False),
+        "Segment.TButton": (c["canvas_sunken"], c["hairline"], None, c["ink_secondary"], False),
+        "SegmentOn.TButton": (c["primary_subtle"], "#d4e5fc", None, c["primary_deep"], True),
+        "Page.TButton": (c["sidebar"], c["hairline"], None, c["ink"], False),
+        "PageOn.TButton": (c["primary_subtle"], "#d4e5fc", None, c["primary_deep"], True),
+    }
+    app = root._root()
+    assets = getattr(app, "_button_images", None)
+    if assets is None:
+        assets = app._button_images = {}
+    radius = px(7)
+    for name, (fill, hover, border, ink, bold) in specs.items():
+        element = f"Desk{radius}.{name}.plate"
+        if element not in assets:
+            pressed_fill = c["primary_press"] if name == "Primary.TButton" else hover
+            disabled_fill = c["canvas_sunken"] if fill != c["sidebar"] else fill
+            normal, active, pressed, disabled = assets[element] = (
+                _control_plate(root, radius, fill, border),
+                _control_plate(root, radius, hover, border),
+                _control_plate(root, radius, pressed_fill, border),
+                _control_plate(root, radius, disabled_fill))
+            style.element_create(element, "image", normal, ("disabled", disabled),
+                                 ("pressed", pressed), ("active", active),
+                                 border=radius, padding=0, sticky="nswe")
+        style.layout(name, [(element, {"sticky": "nswe", "children": [
+            ("Button.padding", {"sticky": "nswe", "children": [
+                ("Button.focus", {"sticky": "nswe", "children": [
+                    ("Button.label", {"sticky": "nswe"})]})]})]})])
+        page = name.startswith("Page")
+        style.configure(name, foreground=ink, font=font("body", bold), width=0,
+                        padding=(px(12), px(9 if page else 7)),
+                        anchor="w" if page else "center",
+                        focusthickness=1, focuscolor=c["primary_soft"])
+        style.map(name, foreground=[("disabled", c["ink_faint"])])
+
+    tab = f"Desk{radius}.Notebook.plate"
+    if tab not in assets:
+        off, hover, on = assets[tab] = (
+            _control_plate(root, radius, c["canvas_soft"]),
+            _control_plate(root, radius, c["canvas_sunken"]),
+            _control_plate(root, radius, c["primary_subtle"]))
+        style.element_create(tab, "image", off, ("selected", on), ("active", hover),
+                             border=radius, padding=0, sticky="nswe")
+    style.layout("TNotebook.Tab", [(tab, {"sticky": "nswe", "children": [
+        ("Notebook.padding", {"sticky": "nswe", "children": [
+            ("Notebook.focus", {"sticky": "nswe", "children": [
+                ("Notebook.label", {"sticky": ""})]})]})]})])
+
+
+def ui_icon(root, name, size=18, *, tile=False):
+    """Draw small line icons with Windows-independent geometry."""
+    dim = px(size)
+    image = Image.new("RGBA", (dim * 3, dim * 3))
+    draw = ImageDraw.Draw(image)
+    step = dim * 3 / 24
+    stroke = max(2, round(step * 1.7))
+    ink = COLORS["primary"]
+
+    def points(*values):
+        return tuple(round(v * step) for v in values)
+
+    def line(*values):
+        draw.line(points(*values), fill=ink, width=stroke, joint="curve")
+
+    def rectangle(x1, y1, x2, y2, radius):
+        draw.rounded_rectangle(points(x1, y1, x2, y2), radius=round(radius * step),
+                               outline=ink, width=stroke)
+
+    if tile:
+        draw.rounded_rectangle(points(0, 0, 23.8, 23.8), radius=round(6 * step),
+                               fill=COLORS["primary_subtle"])
+    if name == "conversation":
+        rectangle(4.5, 5.5, 19.5, 16, 3)
+        line(8, 16, 7, 19, 11, 16)
+        line(8, 10, 16, 10)
+    elif name == "inbox":
+        rectangle(3.5, 5, 20.5, 19, 2.5)
+        line(4, 12, 9, 12, 10.5, 15, 13.5, 15, 15, 12, 20, 12)
+    elif name == "chart":
+        line(4, 4, 4, 20, 21, 20)
+        for x, top in ((8, 13), (13, 8), (18, 5)):
+            line(x, top, x, 17)
+    elif name == "book":
+        line(12, 7, 9, 5, 4, 5, 4, 17, 8, 17, 12, 19, 16, 17, 20, 17, 20, 5, 15, 5, 12, 7, 12, 19)
+    return ImageTk.PhotoImage(image.resize((dim, dim), Image.Resampling.LANCZOS), master=root)
 
 
 # ═══ ttk 样式 ═════════════════════════════════════════════════════════════
@@ -192,72 +275,29 @@ def apply_theme(root: tk.Misc, scale_factor: float | None = None) -> ttk.Style:
     style.configure("Link.TLabel", background=c["canvas"], foreground=c["primary"],
                     font=font("small"))
 
-    # ── 按钮：pill 形（靠 padding 做"胶囊"的观感，tkinter 无圆角）──────────
-    _btn = dict(borderwidth=0, focusthickness=0, relief="flat",
-                padding=(px(14), px(7)))
-    style.configure("Primary.TButton", background=c["primary"], foreground=c["on_primary"],
-                    font=font("body", True), **_btn)
-    style.map("Primary.TButton",
-              background=[("pressed", c["primary_press"]), ("active", c["primary_deep"]),
-                          ("disabled", c["hairline_strong"])],
-              foreground=[("disabled", c["ink_mute"])])
-    style.configure("Secondary.TButton", background=c["canvas"], foreground=c["primary"],
-                    font=font("body"), **_btn)
-    style.map("Secondary.TButton",
-              background=[("pressed", c["primary_subtle"]), ("active", c["primary_subtle"])],
-              foreground=[("disabled", c["ink_faint"])])
-    style.configure("Ghost.TButton", background=c["canvas_soft"], foreground=c["ink_secondary"],
-                    font=font("body"), **_btn)
-    style.map("Ghost.TButton", background=[("active", c["canvas_sunken"])])
-    style.configure("Danger.TButton", background=c["canvas"], foreground=c["danger"],
-                    font=font("body"), **_btn)
-    style.map("Danger.TButton", background=[("active", c["danger_bg"])])
-
-    # 分段控件（今日 / 近 7 天 / 自定义）—— 选中态要**一眼看得出来**：
-    # clam 主题的按钮边框由 light/dark/bordercolor 三个色控制，
-    # 只设 background 会被边框盖住（第一版就吃了这个亏：选中态几乎看不出来）
-    style.configure("Segment.TButton", background=c["canvas"], foreground=c["ink_mute"],
-                    font=font("body"), borderwidth=1, relief="solid",
-                    bordercolor=c["hairline"], lightcolor=c["canvas"],
-                    darkcolor=c["canvas"], padding=(px(14), px(6)))
-    style.map("Segment.TButton",
-              background=[("active", c["primary_subtle"])],
-              foreground=[("active", c["primary_deep"])])
-    style.configure("SegmentOn.TButton", background=c["primary_subtle"],
-                    foreground=c["primary_deep"], font=font("body", True),
-                    borderwidth=1, relief="solid", bordercolor=c["primary_soft"],
-                    lightcolor=c["primary_subtle"], darkcolor=c["primary_subtle"],
-                    padding=(px(14), px(6)))
-    style.map("SegmentOn.TButton",
-              background=[("active", c["primary_subtle"])],
-              foreground=[("active", c["primary_press"])])
-
-    nav = dict(padding=(px(12), px(8)), borderwidth=0, relief="flat",
-               focusthickness=1, focuscolor=c["primary_soft"])
-    style.configure("Page.TButton", background=c["canvas"], foreground=c["ink_secondary"],
-                    font=font("body"), **nav)
-    style.configure("PageOn.TButton", background=c["primary_subtle"],
-                    foreground=c["primary_deep"], font=font("body", True), **nav)
-    for name in ("Page.TButton", "PageOn.TButton"):
-        style.map(name, background=[("active", c["primary_subtle"])])
+    _configure_buttons(root, style)
 
     # ── 表格 ────────────────────────────────────────────────────────────
     style.configure("Treeview", background=c["canvas"], fieldbackground=c["canvas"],
-                    foreground=c["ink"], rowheight=px(24), borderwidth=0,
+                    foreground=c["ink"], rowheight=px(31), borderwidth=0, relief="flat",
                     font=font("body"))
+    style.layout("Treeview", [("Treeview.padding", {"sticky": "nswe", "children": [
+        ("Treeview.treearea", {"sticky": "nswe"})]})])
     style.configure("Treeview.Heading", background=c["canvas_sunken"],
                     foreground=c["ink_mute"], font=font("small", True),
-                    relief="flat", padding=(px(6), px(5)))
+                    relief="flat", padding=(px(10), px(7)))
     style.map("Treeview.Heading", background=[("active", c["canvas_sunken"])])
     style.map("Treeview", background=[("selected", c["primary_subtle"])],
               foreground=[("selected", c["ink"])])
 
     # ── 输入 ────────────────────────────────────────────────────────────
     style.configure("TEntry", fieldbackground=c["canvas"], foreground=c["ink"],
-                    bordercolor=c["hairline_strong"], lightcolor=c["hairline_strong"],
-                    darkcolor=c["hairline_strong"], insertcolor=c["ink"], padding=px(4))
+                    bordercolor=c["hairline"], lightcolor=c["canvas"],
+                    darkcolor=c["canvas"], insertcolor=c["ink"], padding=(px(8), px(6)))
     style.configure("TCombobox", fieldbackground=c["canvas"], background=c["canvas"],
-                    foreground=c["ink"], arrowcolor=c["ink_mute"], padding=px(3))
+                    foreground=c["ink"], arrowcolor=c["ink_mute"],
+                    bordercolor=c["hairline"], lightcolor=c["canvas"],
+                    darkcolor=c["canvas"], padding=(px(8), px(5)))
     # clam 的 readonly 下拉框默认是灰底（#dcdad5），和旁边白色输入框不一致 —— 拉平
     style.map("TCombobox",
               fieldbackground=[("readonly", c["canvas"])],
@@ -278,13 +318,17 @@ def apply_theme(root: tk.Misc, scale_factor: float | None = None) -> ttk.Style:
     # ── 标签页 + 分区框 ─────────────────────────────────────────────────
     # 这两个是"所有对话框共用"的容器：在 theme 里统一定义一次，
     # 知识库 / 学到的 / 待人工 等面板就一起升级了（不然每个文件都要改一遍）
-    style.configure("TNotebook", background=c["canvas_soft"], borderwidth=0)
+    style.configure("TNotebook", background=c["canvas_soft"], borderwidth=0,
+                    bordercolor=c["canvas_soft"], lightcolor=c["canvas_soft"],
+                    darkcolor=c["canvas_soft"], padding=0, tabmargins=(0, 0, 0, px(8)))
+    style.layout("TNotebook", [("Notebook.client", {"sticky": "nswe"})])
     style.configure("TNotebook.Tab", background=c["canvas_sunken"],
-                    foreground=c["ink_mute"], padding=(px(14), px(7)),
+                    foreground=c["ink_mute"], padding=(px(14), px(7)), borderwidth=0,
+                    lightcolor=c["canvas_soft"], darkcolor=c["canvas_soft"],
                     font=font("body"))
     style.map("TNotebook.Tab",
-              background=[("selected", c["canvas"])],
-              foreground=[("selected", c["ink"])])
+              background=[("selected", c["primary_subtle"])],
+              foreground=[("selected", c["primary_deep"])])
     style.configure("TLabelframe", background=c["canvas"], bordercolor=c["hairline"],
                     borderwidth=1, relief="solid", padding=px(6))
     style.configure("TLabelframe.Label", background=c["canvas"],
@@ -308,16 +352,26 @@ def rounded_rect(canvas: tk.Canvas, x1, y1, x2, y2, r: int = RADIUS["card"], **k
     return canvas.create_polygon(pts, smooth=True, **kw)
 
 
-def card(parent, *, padding: int | None = None, bg: str | None = None) -> ttk.Frame:
-    """白底卡片：发丝线边框 + 内边距。tkinter 没有阴影，用边框+底色差做层次。"""
-    outer = tk.Frame(parent, background=COLORS["hairline"],
-                     highlightthickness=0, bd=0)
-    inner = tk.Frame(outer, background=bg or COLORS["canvas"],
-                     highlightthickness=0, bd=0)
-    inner.pack(fill="both", expand=True, padx=1, pady=1)   # 1px 边 = 发丝线
-    inner._pad = padding  # type: ignore[attr-defined]
-    return outer
+def card(parent, *, padding: int | None = None, bg: str | None = None) -> tk.Canvas:
+    """A rounded surface with a regular frame for focusable content."""
+    parent_bg = COLORS["canvas_soft"]
+    if isinstance(parent, (tk.Frame, tk.Toplevel)):
+        parent_bg = parent.cget("background")
+    outer = tk.Canvas(parent, width=1, height=1, background=parent_bg,
+                      highlightthickness=0, borderwidth=0)
+    fill = bg or COLORS["canvas"]
+    inner = tk.Frame(outer, background=fill, highlightthickness=0, bd=0)
+    inner.pack(fill="both", expand=True, padx=px(7), pady=px(5))
+    inner._pad = padding
 
+    def paint(event):
+        outer.delete("surface")
+        if event.width > px(16) and event.height > px(16):
+            rounded_rect(outer, 1, 1, event.width - 1, event.height - 1, px(12),
+                         fill=fill, outline=COLORS["hairline"], tags="surface")
+
+    outer.bind("<Configure>", paint)
+    return outer
 
 def card_body(outer) -> tk.Frame:
     """取卡片里真正放内容的那层（配合 card() 用）。"""

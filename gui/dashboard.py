@@ -193,7 +193,7 @@ class DashboardWindow:
     def _build_body(self):
         """内容区（可重复构建：窗口缩放后字号要跟着变，而 tk 控件不会自动改）。"""
         pad = tk.Frame(self._body, background=COLORS["canvas_soft"])
-        pad.pack(fill="both", expand=True, padx=SPACE["lg"], pady=SPACE["lg"])
+        pad.pack(fill="both", expand=True, padx=px(22), pady=px(12))
         self._build_kpis(pad)
         self._build_trend(pad)
         self._build_two_panels(pad)
@@ -210,42 +210,29 @@ class DashboardWindow:
             self._render_guards()
 
     def _build_topbar(self):
-        bar = tk.Frame(self.win, background=COLORS["canvas"])
+        bar = self._topbar = tk.Frame(self.win, background=COLORS["canvas_soft"])
         bar.pack(fill="x")
-        inner = tk.Frame(bar, background=COLORS["canvas"])
-        inner.pack(fill="x", padx=SPACE["lg"], pady=SPACE["md"])
+        if not self._embedded:
+            tk.Label(bar, text="运营看板", font=font("h1", True),
+                     background=COLORS["canvas_soft"], foreground=COLORS["ink"]).pack(
+                         anchor="w", padx=px(22), pady=(px(12), 0))
 
-        # ★ 先 pack 右侧那组（导出/刷新/时间范围）：Tk 的 pack 是**先 pack 的先占空间**，
-        #   右侧最后 pack 的话一超宽就被裁掉（上一版「导出 CSV」和日期都是这么没的）
-        ttk.Button(inner, text="导出", style="Secondary.TButton",
+        controls = tk.Frame(bar, background=COLORS["canvas_soft"])
+        controls.pack(fill="x", padx=px(22), pady=(px(14), px(4)))
+        ttk.Button(controls, text="导出", style="Secondary.TButton",
                    command=self._export).pack(side="right")
-        ttk.Button(inner, text="刷新 ↻", style="Ghost.TButton",
-                   command=self.refresh).pack(side="right", padx=(0, SPACE["sm"]))
-        tk.Label(inner, text="运营看板", font=font("h1", True),
-                 background=COLORS["canvas"], foreground=COLORS["ink"]).pack(side="left")
-
-        # 分段控件（今日 / 近 7 天 / 自定义）—— 选中态是靛蓝浅底
+        ttk.Button(controls, text="刷新", style="Ghost.TButton",
+                   command=self.refresh).pack(side="right", padx=(0, px(8)))
         self._seg = {}
-        controls = tk.Frame(bar, background=COLORS["canvas"])
-        controls.pack(fill="x", padx=SPACE["lg"], pady=(0, SPACE["md"]))
-        self._range_label = tk.Label(controls, text="", font=font("small"),
-                                     background=COLORS["canvas"],
-                                     foreground=COLORS["ink_mute"])
-        self._range_label.pack(side="right")
-        seg = tk.Frame(controls, background=COLORS["canvas"])
-        seg.pack(side="left")
         for key, text in (("today", "今日"), ("week", "近 7 天"), ("custom", "自定义")):
-            b = ttk.Button(seg, text=text, style="Segment.TButton",
-                           command=lambda k=key: self._pick_range(k))
-            b.pack(side="left", padx=(0, SPACE["xs"]))
-            self._seg[key] = b
-
-        # 示例数据开关**不放顶栏**：顶栏要装 标题+时间范围+日期+刷新+导出，已经很挤，
-        # 再塞一个复选框会互相挤掉（实测把日期和「导出 CSV」都挤没了）。
-        # 它真正被需要的时刻只有一个：**面板空着、不知道这块讲什么的时候** ——
-        # 入口放在空状态里（见 _render_distribution），进去后横幅上有「退出示例」。
-        self._topbar_sep = tk.Frame(self.win, height=1, background=COLORS["hairline"])
-        self._topbar_sep.pack(fill="x")
+            button = ttk.Button(controls, text=text, style="Segment.TButton",
+                                command=lambda k=key: self._pick_range(k))
+            button.pack(side="left", padx=(0, px(4)))
+            self._seg[key] = button
+        self._range_label = tk.Label(controls, text="", font=font("small"),
+                                     background=COLORS["canvas_soft"],
+                                     foreground=COLORS["ink_mute"])
+        self._range_label.pack(side="left", padx=(px(10), 0))
 
     def _enter_demo(self):
         """切到示例数据。当前范围没数据时自动放宽到近 7 天（不然还是空的）。"""
@@ -275,7 +262,7 @@ class DashboardWindow:
                          font=font("small"), background=COLORS["info_bg"],
                          foreground=COLORS["info"], anchor="w").pack(
                     side="left", padx=SPACE["md"], pady=SPACE["sm"])
-            self._demo_box.pack(fill="x", after=self._topbar_sep)
+            self._demo_box.pack(fill="x", after=self._topbar, padx=px(22), pady=(0, px(6)))
         elif getattr(self, "_demo_box", None):
             self._demo_box.pack_forget()
 
@@ -286,9 +273,11 @@ class DashboardWindow:
         self._kpi_cards: list[tk.Frame] = []
         for index in range(4):
             c = card(row)
-            row.grid_columnconfigure(index, weight=1, uniform="kpis")
-            c.grid(row=0, column=index, sticky="nsew",
-                   padx=(0, SPACE["md"]) if index < 3 else (0, 0))
+            column = index * 2
+            row.grid_columnconfigure(column, weight=1, uniform="kpis")
+            if index < 3:
+                row.grid_columnconfigure(column + 1, minsize=px(12))
+            c.grid(row=0, column=column, sticky="nsew")
             self._kpi_cards.append(c)
 
     def _build_trend(self, parent):
@@ -354,7 +343,7 @@ class DashboardWindow:
         for cid, text, width, anchor in (("q", "客户原话", px(168), "w"),
                                          ("n", "次数", px(44), "center"),
                                          ("why", "转人工原因", px(116), "w")):
-            self._tree.heading(cid, text=text)
+            self._tree.heading(cid, text=text, anchor=anchor)
             self._tree.column(cid, width=width, minwidth=40, anchor=anchor,
                               stretch=(cid == "q"))
         self._tree.pack(side="left", fill="both", expand=True)
