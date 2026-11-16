@@ -4,6 +4,7 @@
 import sys
 from pathlib import Path
 import importlib.metadata
+import runpy
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 # ── Hidden imports that PyInstaller can't auto-detect ──────────────
@@ -90,6 +91,12 @@ datas = [
     ("profiles", "profiles"),                         # 窗口标定（wxbot/profile.py 按 __file__ 找）
     ("bge_model", "bge_model"),                       # BGE model (~92MB, offline)
 ]
+
+# Freeze the revision alongside the application, so the EXE needs no Git.
+version = runpy.run_path(str(Path(SPECPATH) / "app_version.py"))
+build_id_file = Path(workpath) / version["BUILD_FILE"]
+build_id_file.write_text(version["source_build_id"](), encoding="utf-8")
+datas.append((str(build_id_file), "."))
 
 # RapidOCR 自带 PP-OCRv4 onnx 模型（det 4.5MB / rec 10.4MB / cls 0.6MB），
 # 必须打进包，否则打包版要联网下载模型。

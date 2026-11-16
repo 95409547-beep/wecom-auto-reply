@@ -19,6 +19,7 @@ from datetime import datetime
 from tkinter import ttk, messagebox
 from typing import Callable, Dict, List, Optional
 
+from app_version import APP_VERSION, version_label
 from gui.theme import (COLORS, SPACE, apply_theme, detect_dpi_scale, font, px,
                        scale as _ui_scale)
 
@@ -180,7 +181,9 @@ class MainWindow:
     def _create_window(self):
         """创建窗口"""
         self.root = tk.Tk()
-        self.root.title("企业微信智能客服")
+        build = version_label()
+        self.root.title(f"企业微信智能客服 {build}")
+        logger.info("运行版本 %s", build)
         # 先给个大致位置（建控件期间别在屏幕角落闪）
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"{px(760)}x{px(320)}+{max(0, sw - px(780))}+{px(10)}")
@@ -587,6 +590,8 @@ class MainWindow:
         self._topmost_on = tk.BooleanVar(value=always_on_top_enabled())
         ttk.Checkbutton(footer, text="窗口置顶", variable=self._topmost_on,
                         command=self._toggle_topmost).pack(side=tk.RIGHT)
+        ttk.Label(footer, text=f"v{APP_VERSION}").pack(
+            side=tk.RIGHT, padx=(0, SPACE["md"]))
 
     def _toggle_topmost(self):
         """勾/取消置顶 → 立刻生效 + 写回配置。
