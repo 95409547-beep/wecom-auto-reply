@@ -16,6 +16,7 @@ class FakeScanner:
     """Minimal import-free stand-in so we can test the methods in isolation."""
 
     def __init__(self):
+        self._auto_layout_enabled = False
         self._t_focus = 0.3
         self._t_click = 0.1
         self._click_input_x = 0.5

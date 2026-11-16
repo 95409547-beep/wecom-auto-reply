@@ -1,8 +1,4 @@
-"""截图模式的软件 profile：加载、映射到 config、气泡颜色规则。
-
-核心不变量：**套用现在这份 wecom profile 之后，config 必须和改造前一样** ——
-不能让"支持多软件"这件事把正在跑的企业微信改坏。
-"""
+"""Profiles map legacy geometry while selecting runtime auto detection."""
 import json
 from pathlib import Path
 
@@ -38,23 +34,23 @@ def base_cfg():
     return json.loads(Path("config.json").read_text(encoding="utf-8"))
 
 
-def test_applying_wecom_profile_reproduces_current_geometry(base_cfg):
-    """关键回归：套用 profile 后，聊天区起点/宽度/上下边距与现网一致。"""
+def test_wecom_profile_enables_auto_and_retains_manual_template(base_cfg):
+    """Automatic mode is default; opting out still has template geometry."""
     p = load_profile("wecom")
     out = apply_to_config(base_cfg, p)
 
     def chat_left(c):
         return int(c["columns"]["col1_width_px"]) + int(c["columns"]["col2_width_px"])
 
-    before = chat_left(base_cfg)
     after = chat_left(out)
     assert abs(after - p["layout"]["chat_x"]) <= 3, "聊天区左边界要落在标定值附近"
-    assert abs(after - before) <= 3, f"套用 profile 后聊天区起点变了: {before} → {after}"
+    assert out["layout"]["auto_detect"] is True
+    # Static values are retained only for explicit legacy/manual mode.
 
     assert out["crop"]["chat_area"]["top_margin_px"] == \
-        base_cfg["crop"]["chat_area"]["top_margin_px"]
+        p["layout"]["chat_top_margin_px"]
     assert out["crop"]["chat_area"]["bottom_margin_px"] == \
-        base_cfg["crop"]["chat_area"]["bottom_margin_px"]
+        p["layout"]["chat_bottom_margin_px"]
 
 
 def test_applying_profile_sets_window_match(base_cfg):

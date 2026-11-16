@@ -167,7 +167,7 @@ def _main_impl():
         log.info(f"客户白名单已启用：{sorted(whitelist) if whitelist else '（空 —— 不会点开任何会话）'}")
     # 采集方式自检：config 里 col1_width_px/col2_width_px 是写死的像素边界，
     # 这里用像素锚点量一遍实际边界，对不上就打警告（只报不改）。
-    if check_layout is not None and scanner._native:
+    if check_layout is not None and scanner._native and not cfg.get("layout", {}).get("auto_detect"):
         try:
             full = scanner._grab_window_cached()
             if full is not None:
@@ -845,6 +845,8 @@ def _main_impl():
             log.warning(f"未找到目标软件窗口（{names}），本轮不扫描。"
                         f"请在设置里确认选的软件，或把它打开并登录。")
 
+    layout_notice = {"failed": False}
+
     def _run_scan():
         """Background thread: scan, OCR, RAG, dispatch."""
         if not _scan_lock.acquire(blocking=False):
@@ -875,7 +877,15 @@ def _main_impl():
             # ══ 2. 聊天列表截图 + 去重 ══
             c2_img = scanner.capture_chat_list()
             if c2_img is None:
+                if cfg.get("layout", {}).get("auto_detect"):
+                    layout_notice["failed"] = True
+                    root.after(0, lambda: window.set_banner(
+                        "窗口自动标定未通过：请打开企业微信聊天会话、关闭遮挡弹窗；本轮未扫描或发送。",
+                        level="error"))
                 return
+            if layout_notice["failed"]:
+                layout_notice["failed"] = False
+                root.after(0, lambda: window.set_banner("窗口自动标定已恢复，继续扫描。", level="ok"))
             if detector.col2_seen(c2_img):
                 return
 
@@ -902,9 +912,17 @@ def _main_impl():
                     if not detector.is_clickable(ry, timeout=15):
                         log.info(f"红点y={ry} 冷却中，跳过")
                         continue
+                    scan_y = ry
+                    scan_top, scan_bot = row_top_offset, row_bot_offset
+                    if cfg.get("layout", {}).get("auto_detect"):
+                        scan_y = scanner.row_anchor(ry, c2_img)
+                        if scan_y is None:
+                            continue
+                        scan_top, scan_bot = scanner.row_geometry()
                     row_img = c2_img.crop(
-                        (0, max(0, ry + row_top_offset), cw2,
-                         ry + row_bot_offset))
+                        (0, max(0, scan_y + scan_top), cw2,
+                         scan_y + scan_bot))
+                    ry = scan_y
                     name_crop, name_text = detector.read_row_name(row_img)
                     if name_crop is None:
                         log.info(f"红点y={ry} 未检测到名字区域")
@@ -1288,7 +1306,10 @@ async def _scan_fallback(scanner: Scanner, detector: MessageDetector,
             log.debug(f"动态行定位：{len(row_ys)} 行，y={row_ys}")
         else:
             log.warning("动态行定位失败，退回固定行高（可能读到错位的会话）")
-    if not row_ys:
+    if cfg.get("layout", {}).get("auto_detect"):
+        row_ys = scanner._list_rows(c2_img)
+        row_top, row_bot = scanner.row_geometry()
+    elif not row_ys:
         row_ys = [start_y + i * row_h for i in range(max_rows)
                   if start_y + i * row_h + row_bot <= c2_img.size[1]]
 

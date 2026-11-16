@@ -501,6 +501,13 @@ class MessageDetector:
         from wxbot.detector.name_region import detect_name_region
         return detect_name_region(row_img, config=self._cfg.get("detection", {}).get("name_region"))
 
+    def read_header_name(self, header_img: Image.Image):
+        """Titles can be shorter than a list name and vertically centred.
+
+        Do not apply list-row width heuristics or the 45% preview crop here.
+        """
+        return header_img, self.extract_text(header_img, min_conf=self._conf_name)
+
     def read_row_name(self, row_img: Image.Image):
         """读一行的会话名，返回 (名字区图, OCR 文本)。
 

@@ -190,6 +190,11 @@ class Scanner:
         self._col3: Optional[Tuple[int, int, int, int]] = None
         self.mouse = Mouse()
         self.kb = Kb()
+        self._auto_layout_enabled = bool(cfg.get("layout", {}).get("auto_detect", False))
+        self._auto_layout = None
+        self._layout_checked = 0.0
+        self._layout_key = None
+        self._layout_warning = 0.0
         self._cfg = cfg      # 发送前定位会话要用到行几何/动态行开关
 
         # --- 采集方式 ---
@@ -322,12 +327,60 @@ class Scanner:
             pass
         return self._region
 
+    def _refresh_auto_layout(self, region, force=False):
+        """Re-measure after resize, window replacement, or an in-place sidebar change.
+
+        Failed measurements invalidate the previous result, including at the same
+        window size. Never silently fall back to another computer's coordinates.
+        """
+        if not self._auto_layout_enabled:
+            return None
+        now = time.monotonic()
+        key = (self._hwnd, region[2], region[3])
+        if not force and key == self._layout_key and now - self._layout_checked < .5:
+            return self._auto_layout
+        self._layout_checked, self._layout_key = now, key
+        previous = self._auto_layout
+        self._auto_layout = None
+        full = self._grab_window_cached()
+        if full is not None and full.size == tuple(region[2:]):
+            from wxbot.wecom_layout import detect_wecom_layout
+            self._auto_layout = detect_wecom_layout(full)
+        if self._auto_layout != previous and self._auto_layout is not None:
+            logger.info("企业微信自动标定: %s", self._auto_layout)
+        if self._auto_layout is None and now - self._layout_warning > 10:
+            logger.warning("企业微信自动标定未通过，本轮停止扫描和发送；请打开有聊天记录的会话并关闭遮挡弹窗。")
+            self._layout_warning = now
+        return self._auto_layout
+
+    def row_geometry(self):
+        if self._auto_layout_enabled and self._auto_layout is not None:
+            s = self._auto_layout.scale
+            return -round(8*s), round(38*s)
+        cr = self._cfg.get("crop", {}).get("name_row", {})
+        return cr.get("top_offset", -16), cr.get("bottom_offset", 56)
+
+    def row_anchor(self, y, image):
+        if self._auto_layout_enabled:
+            rows = self._list_rows(image)
+            if not rows:
+                return None
+            closest = min(rows, key=lambda item: abs(item-y))
+            return closest if abs(closest-y) < 42*self._auto_layout.scale else None
+        return y
+
     def get_col2_region(self) -> Optional[Tuple[int, int, int, int]]:
         r = self.get_region()
         if not r:
             return None
 
         left, top, w, h = r
+        if self._auto_layout_enabled:
+            layout = self._refresh_auto_layout(r)
+            if layout is None:
+                return None
+            self._col2 = (left+layout.nav_right, top, layout.chat_left-layout.nav_right, h)
+            return self._col2
 
         if self._col1_px:
             # 固定像素：与窗口宽度无关
@@ -349,7 +402,8 @@ class Scanner:
             return None
         left, top, w, h = r
         col3_x = c2[0] + c2[2]
-        col3_w = w - (col3_x - left)
+        col3_w = (self._auto_layout.chat_right-self._auto_layout.chat_left
+                  if self._auto_layout_enabled else w - (col3_x - left))
         self._col3 = (col3_x, top, col3_w, h)
         return self._col3
 
@@ -445,6 +499,9 @@ class Scanner:
             return None
         img = self.capture_region(*c3)
         cw, ch = img.size
+        if self._auto_layout_enabled:
+            layout = self._auto_layout
+            return img.crop((0, layout.header_bottom, cw, layout.input_top))
         rm = int(cw * self._chat_rm_ratio)
         top = self._chat_top_px or int(ch * self._chat_top_ratio)
         bot = (ch - self._chat_bot_px) if self._chat_bot_px \
@@ -536,6 +593,8 @@ class Scanner:
 
     def _list_rows(self, c2_img) -> list:
         """会话列表里每一行的 y。优先动态切分（微信行高不固定）。"""
+        if self._auto_layout_enabled:
+            return self._auto_layout.rows(c2_img) if self._auto_layout else []
         scan = self._cfg.get("scan", {}) if hasattr(self, "_cfg") else {}
         fb = self._cfg.get("fallback", {}) if hasattr(self, "_cfg") else {}
         cr = self._cfg.get("crop", {}).get("name_row", {}) if hasattr(self, "_cfg") else {}
@@ -581,8 +640,7 @@ class Scanner:
             logger.warning("打开会话失败：抓不到会话列表")
             return False
         cr = self._cfg.get("crop", {}).get("name_row", {}) if hasattr(self, "_cfg") else {}
-        row_top = cr.get("top_offset", -16)
-        row_bot = cr.get("bottom_offset", 56)
+        row_top, row_bot = self.row_geometry()
         x0 = int(cr.get("x_from_ratio", 0.0) * c2_img.size[0])
         x1 = int(cr.get("x_to_ratio", 1.0) * c2_img.size[0])
 
@@ -605,6 +663,14 @@ class Scanner:
         logger.error(f"没找到会话 {customer_name!r} —— 拒绝发送，避免发错人")
         return False
 
+    def _read_header(self, reader, header):
+        if self._auto_layout_enabled:
+            detector = getattr(reader, "__self__", None)
+            header_reader = getattr(detector, "read_header_name", None)
+            if header_reader is not None:
+                return header_reader(header)
+        return reader(header)
+
     def read_open_name(self, read_row_name) -> str:
         """读聊天区顶部的会话名，返回 OCR 原文（读不出来返回空串）。
 
@@ -617,10 +683,11 @@ class Scanner:
         if not c3:
             return ""
         ca = self._cfg.get("crop", {}).get("chat_area", {}) if hasattr(self, "_cfg") else {}
-        hdr = int(ca.get("top_margin_px") or max(40, c3[3] * 0.10))
+        hdr = (self._auto_layout.header_bottom if self._auto_layout_enabled
+               else int(ca.get("top_margin_px") or max(40, c3[3] * 0.10)))
         try:
             header = self.capture_region(c3[0], c3[1], c3[2], max(30, hdr))
-            _crop, text = read_row_name(header)
+            _crop, text = self._read_header(read_row_name, header)
         except Exception as e:
             logger.debug(f"读会话名失败: {e}")
             return ""
@@ -661,10 +728,11 @@ class Scanner:
         if not c3:
             return False
         ca = self._cfg.get("crop", {}).get("chat_area", {}) if hasattr(self, "_cfg") else {}
-        hdr = int(ca.get("top_margin_px") or max(40, c3[3] * 0.10))
+        hdr = (self._auto_layout.header_bottom if self._auto_layout_enabled
+               else int(ca.get("top_margin_px") or max(40, c3[3] * 0.10)))
         try:
             header = self.capture_region(c3[0], c3[1], c3[2], max(30, hdr))
-            _crop, text = read_row_name(header)
+            _crop, text = self._read_header(read_row_name, header)
         except Exception as e:
             logger.debug(f"校验会话名失败: {e}")
             return False
@@ -707,11 +775,18 @@ class Scanner:
         return True
 
     def click_input_box(self):
+        if self._auto_layout_enabled:
+            region = self.get_region()
+            if not region or self._refresh_auto_layout(region, force=True) is None:
+                return False
         c3 = self.get_col3_region()
         if not c3:
             return False
         input_x = c3[0] + int(c3[2] * self._click_input_x)
         input_y = c3[1] + c3[3] - self._click_input_bot
+        if self._auto_layout_enabled:
+            layout = self._auto_layout
+            input_y = c3[1] + (layout.input_top + layout.input_bottom)//2
         self.click_position(input_x, input_y)
         return True
 
@@ -811,9 +886,10 @@ class Scanner:
 
         Uses ctypes for direct clipboard access on Windows (no subprocess).
         """
+        # A failed automatic measurement must abort before clipboard or keys.
+        if not self.click_input_box():
+            raise RuntimeError("无法确认输入框位置，已中止发送")
         self._set_clipboard(text)
-        # Click input box to ensure cursor is in the right place
-        self.click_input_box()
         time.sleep(0.1)
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.1)

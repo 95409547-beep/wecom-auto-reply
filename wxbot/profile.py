@@ -99,6 +99,8 @@ def apply_to_config(cfg: dict, profile: dict) -> dict:
         wc["title_hint"] = win.get("title_hint") or win.get("prefer_title")
 
     lay = profile.get("layout") or {}
+    # Auto detection belongs to the selected profile, not a previous app.
+    out.setdefault("layout", {})["auto_detect"] = bool(lay.get("auto_detect", False))
     cols = out.setdefault("columns", {})
     chat_x = lay.get("chat_x")
     if chat_x:

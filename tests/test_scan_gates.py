@@ -49,6 +49,6 @@ def test_wecom_behavior_unchanged():
     sys.path.insert(0, str(ROOT))
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     out = apply_to_config(cfg, load_profile("wecom"))
-    assert "require_whitelist" not in out.get("customers", {})
+    assert out.get("customers") == cfg.get("customers")
     assert out.get("detection", {}).get("red_dot", {}).get("enabled", True) is True
     assert out["rag"]["allow_auto_send"] is True
