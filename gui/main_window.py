@@ -12,15 +12,18 @@
 """
 
 import csv
+import ctypes
 import logging
 import os
 import tkinter as tk
 from datetime import datetime
+from time import monotonic
 from tkinter import ttk, messagebox
 from typing import Callable, Dict, List, Optional
 
 from app_version import APP_VERSION, version_label
-from gui.theme import COLORS, SPACE, apply_theme, card, card_body, font, px, ui_icon
+from gui.theme import SPACE, apply_theme, px, ui_icon
+from gui.workbench_theme import COLORS, apply_workbench_theme, font
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +129,23 @@ class MessageRecord:
         }
 
 
+def _animations_enabled() -> bool:
+    """Read the Windows animation preference (SPI_GETCLIENTAREAANIMATION)."""
+    if os.name != "nt":
+        return True
+    enabled = ctypes.c_int()
+    success = ctypes.windll.user32.SystemParametersInfoW(
+        0x1042, 0, ctypes.byref(enabled), 0)
+    return bool(success and enabled.value)
+
+
 class MainWindow:
     """主控窗口"""
     def __init__(self, on_pause: Callable = None, on_resume: Callable = None,
                  on_settings: Callable = None, on_kb: Callable = None,
-                 on_dashboard: Callable = None, can_start: Callable = None):
+                 on_dashboard: Callable = None, can_start: Callable = None,
+                 web_mode: bool = False):
+        self._web_mode = web_mode
         self.on_pause = on_pause
         self.on_resume = on_resume
         # 「设置」常驻侧栏底部，任何状态都能点开重配。
@@ -197,6 +212,7 @@ class MainWindow:
 
         # ★ 先把设计系统装上（ttk 样式必须在创建控件之前生效）
         apply_theme(self.root)
+        apply_workbench_theme(self.root)
         self.root.minsize(min(px(920), sw - px(32)), min(px(540), sh - px(96)))
         # 窗口被拖动改大小 → 重排头部 + 表格列按比例（防抖，见 _on_root_configure）
         self.root.bind("<Configure>", self._on_root_configure)
@@ -220,7 +236,8 @@ class MainWindow:
         self._current_page = "工作台"
 
         self._fit_window(sw)
-        self.root.deiconify()
+        if not self._web_mode:
+            self.root.deiconify()
 
     def _fit_window(self, screen_w):
         w = min(px(1180), screen_w - px(32))
@@ -239,7 +256,7 @@ class MainWindow:
         self._shell.grid_columnconfigure(0, weight=0)
         self._shell.grid_columnconfigure(1, weight=1)
         self._shell.grid_rowconfigure(0, weight=1)
-        self._sidebar.configure(width=px(176 if compact else 224))
+        self._sidebar.configure(width=px(176 if compact else 208))
         self._sidebar.pack_propagate(False)
         self._sidebar.grid(row=0, column=0, sticky="ns")
         self._content.grid(row=0, column=1, sticky="nsew")
@@ -280,52 +297,109 @@ class MainWindow:
             for cid, ratio, minw in (("time", 0.13, px(64)), ("customer", 0.20, px(90)),
                                      ("message", 0.43, px(140)), ("action", 0.24, px(90))):
                 self._tree.column(cid, width=max(minw, int(w * ratio)))
-        try:
-            pw = self._pending_frame.winfo_width()
-            if pw > 1:
-                for cid, ratio, minw in (("ptime", 0.07, px(46)),
-                                         ("pcustomer", 0.13, px(80)),
-                                         ("pmsg", 0.24, px(130)),
-                                         ("preply", 0.40, px(180)),
-                                         ("pconf", 0.16, px(60))):
-                    self._pending_tree.column(cid, width=max(minw, int(pw * ratio)))
-        except Exception:
-            pass
+        if hasattr(self, "_queue_panel"):
+            available = self._pending_frame.winfo_width()
+            self._queue_panel.configure(width=max(px(250), min(px(340), int(available * .36))))
+            self._pending_tree.column("#0", width=max(px(220), self._queue_panel.winfo_width() - px(24)))
 
     def _create_header(self):
         toolbar = tk.Frame(self._content, background=COLORS["canvas"])
         toolbar.pack(fill=tk.X)
+        tk.Frame(toolbar, height=1, background=COLORS["hairline"]).pack(side=tk.BOTTOM, fill=tk.X)
         self._title_label = tk.Label(toolbar, text="工作台", font=font("h1"),
                                      background=COLORS["canvas"], foreground=COLORS["ink"])
-        self._title_label.pack(side=tk.LEFT, padx=px(28), pady=px(20))
+        self._title_label.pack(side=tk.LEFT, padx=px(24), pady=px(24))
+        ttk.Button(toolbar, text="打开新版工作台", style="Workbench.Primary.TButton",
+                   command=self._open_web_workbench).pack(side=tk.RIGHT, padx=px(20))
+        self._status_label = tk.Label(
+            toolbar, text="状态：运行中" if self._autostart else "状态：未启动",
+            font=font("small", True), padx=px(12), pady=px(6))
+        self._status_label.bind("<Destroy>", lambda event: self._cancel_animation(event.widget))
+        self._status_label.pack(side=tk.RIGHT, padx=px(28))
+        self._paint_service_status(animate=False)
+
+    def _paint_service_status(self, animate=True):
+        running = not self._paused
+        background = COLORS["success_bg" if running else "canvas_sunken"]
+        foreground = COLORS["success" if running else "ink_mute"]
+        self._status_label.configure(background=background, foreground=foreground)
+        if animate and running and _animations_enabled():
+            self._animate_color(self._status_label, COLORS["primary_subtle"], background)
+        else:
+            self._cancel_animation(self._status_label)
+
+    @staticmethod
+    def _cancel_animation(widget):
+        job = getattr(widget, "_animation_job", None)
+        if job is not None:
+            widget.after_cancel(job)
+            widget._animation_job = None
+
+    def _animate_color(self, widget, start, end):
+        def channels(color):
+            return tuple(value // 257 for value in widget.winfo_rgb(color))
+
+        initial, final = channels(start), channels(end)
+
+        def frame(progress):
+            rgb = tuple(round(a + (b - a) * progress) for a, b in zip(initial, final))
+            widget.configure(background="#%02x%02x%02x" % rgb)
+
+        self._animate(widget, frame)
+
+    def _animate(self, widget, draw):
+        self._cancel_animation(widget)
+
+        started = monotonic()
+
+        def step():
+            widget._animation_job = None
+            progress = min(1.0, (monotonic() - started) / 0.16)
+            draw(1 - (1 - progress) ** 3)
+            if progress < 1:
+                widget._animation_job = widget.after(16, step)
+
+        step()
+
+    def _move_navigation_marker(self, page, animate=True):
+        marker = self._navigation_marker
+        button = self._navigation[page]
+        end = button.winfo_y() + (button.winfo_height() - px(18)) // 2
+        start = marker.winfo_y() if marker.winfo_ismapped() else end
+
+        def draw(progress):
+            marker.place(x=px(15), y=round(start + (end - start) * progress),
+                         width=px(2), height=px(18))
+
+        if animate and start != end and _animations_enabled():
+            self._animate(marker, draw)
+        else:
+            self._cancel_animation(marker)
+            draw(1)
 
     def _create_navigation(self):
         self._sidebar = tk.Frame(self._shell, background=COLORS["sidebar"])
         self._brand = tk.Frame(self._sidebar, background=COLORS["sidebar"])
         self._brand.pack(fill=tk.X, padx=px(18), pady=(px(23), px(28)))
-        self._brand_icon = ui_icon(self.root, "conversation", 24)
+        self._brand_icon = ui_icon(self.root, "conversation", 24, color=COLORS["ink"])
         tk.Label(self._brand, image=self._brand_icon, background=COLORS["sidebar"]).pack(
             side=tk.LEFT, padx=(0, px(8)))
-        tk.Label(self._brand, text="智能客服", font=font("h3", True),
+        tk.Label(self._brand, text="智能客服", font=font("h2", True),
                  background=COLORS["sidebar"], foreground=COLORS["ink"]).pack(side=tk.LEFT)
         # Pack bottom controls first so navigation never pushes them off screen.
         self._sidebar_bottom = tk.Frame(self._sidebar, background=COLORS["sidebar"])
         self._sidebar_bottom.pack(side=tk.BOTTOM, fill=tk.X, padx=px(12), pady=px(16))
-        self._status_label = tk.Label(
-            self._sidebar_bottom, text="状态：运行中" if self._autostart else "状态：未启动",
-            font=font("small"), background=COLORS["sidebar"], foreground=COLORS["ink_mute"])
-        self._status_label.pack(anchor="w", padx=px(10), pady=(0, px(10)))
-        self._run_icons = {name: ui_icon(self.root, name, color=COLORS["on_primary"])
+        self._run_icons = {name: ui_icon(self.root, name, color=COLORS["ink"])
                            for name in ("play", "stop")}
         self._pause_btn = ttk.Button(
             self._sidebar_bottom, text="停止" if self._autostart else "开始",
             image=self._run_icons["stop" if self._autostart else "play"], compound="left",
-            style="Primary.TButton", command=self._toggle_pause)
+            style="Workbench.Service.TButton", command=self._toggle_pause)
         self._pause_btn.pack(fill=tk.X, pady=(0, px(12)))
-        self._settings_icon = ui_icon(self.root, "settings")
+        self._settings_icon = ui_icon(self.root, "settings", color=COLORS["ink_mute"])
         self._settings_btn = ttk.Button(
             self._sidebar_bottom, text="设置", image=self._settings_icon, compound="left",
-            style="Page.TButton", command=self._on_settings_clicked)
+            style="Workbench.Page.TButton", command=self._on_settings_clicked)
         self._settings_btn.pack(fill=tk.X)
         tk.Label(self._sidebar_bottom, text=f"v{APP_VERSION}", font=font("micro"),
                  background=COLORS["sidebar"], foreground=COLORS["ink_faint"]).pack(
@@ -333,12 +407,21 @@ class MainWindow:
         self._navigation = {}
         self._navigation_icons = {}
         for name, glyph in (("工作台", "inbox"), ("数据", "chart"), ("知识库", "book")):
-            icon = self._navigation_icons[name] = ui_icon(self.root, glyph)
+            icon = self._navigation_icons[name] = ui_icon(self.root, glyph, color=COLORS["ink_mute"])
             self._navigation[name] = ttk.Button(
                 self._sidebar, text=f"  {name}", image=icon, compound="left",
-                style="PageOn.TButton" if name == "工作台" else "Page.TButton",
+                style="Workbench.PageOn.TButton" if name == "工作台" else "Workbench.Page.TButton",
                 command=lambda page=name: self._show_page(page))
             self._navigation[name].pack(fill=tk.X, padx=px(12), pady=(0, px(4)))
+
+        self._navigation_marker = tk.Frame(self._sidebar, background=COLORS["primary"])
+        self._navigation_marker.lift()
+        self._navigation_marker.bind("<Destroy>", lambda event: self._cancel_animation(event.widget))
+        self._navigation["工作台"].bind("<Map>", self._position_initial_marker)
+
+    def _position_initial_marker(self, event):
+        event.widget.unbind("<Map>")
+        self._move_navigation_marker(self._current_page, animate=False)
 
     def _show_page(self, name):
         if name == self._current_page:
@@ -360,7 +443,8 @@ class MainWindow:
         self._current_page = name
         self._title_label.config(text="数据看板" if name == "数据" else name)
         for label, btn in self._navigation.items():
-            btn.configure(style="PageOn.TButton" if label == name else "Page.TButton")
+            btn.configure(style="Workbench.PageOn.TButton" if label == name else "Workbench.Page.TButton")
+        self._move_navigation_marker(name)
         if existing is not None:
             self.root.after_idle(existing.on_show)
         self.root.after_idle(self._fit_tree_columns)
@@ -368,6 +452,10 @@ class MainWindow:
     def _on_settings_clicked(self):
         if self.on_settings:
             self.on_settings()
+
+    def _open_web_workbench(self):
+        from gui.web_workbench import open_workbench
+        open_workbench(self)
 
     def _create_banner(self):
         """状态横幅：把"为什么现在不干活"直接写在界面上。
@@ -381,8 +469,10 @@ class MainWindow:
                                 background=COLORS["warning_bg"],
                                 padx=px(12), pady=px(10))
 
-    def set_banner(self, text: str, level: str = "warn"):
+    def set_banner(self, text: str, level: str = "warn", *, blocks_start: bool = False):
         """更新横幅。level: warn=黄 / error=红 / ok=绿（空文本＝隐藏）。"""
+        self._web_banner = {"text": text, "level": level}
+        self._start_guard_banner = blocks_start
         colors = {
             "warn": (COLORS["warning_bg"], COLORS["warning"]),
             "error": (COLORS["danger_bg"], COLORS["danger"]),
@@ -416,15 +506,15 @@ class MainWindow:
     def _create_tabs(self, parent):
         """创建标签页"""
         tab_frame = tk.Frame(parent, background=COLORS["canvas_soft"])
-        tab_frame.pack(fill=tk.BOTH, expand=True, padx=px(28), pady=px(18))
+        tab_frame.pack(fill=tk.BOTH, expand=True, padx=px(24), pady=(px(8), px(24)))
 
         # 标签栏
         tab_bar = tk.Frame(tab_frame, background=COLORS["canvas_soft"])
-        tab_bar.pack(fill=tk.X, pady=(0, px(16)))
+        tab_bar.pack(fill=tk.X, pady=(0, px(20)))
 
-        ttk.Button(tab_bar, text="清空记录", style="Danger.TButton",
+        ttk.Button(tab_bar, text="清空记录", style="Workbench.ToolbarDanger.TButton",
                    command=self._clear_records).pack(side=tk.RIGHT)
-        ttk.Button(tab_bar, text="导出记录", style="Ghost.TButton",
+        ttk.Button(tab_bar, text="导出记录", style="Workbench.Toolbar.TButton",
                    command=self._export_csv).pack(side=tk.RIGHT, padx=(0, SPACE["sm"]))
 
         self._tab_buttons = {}
@@ -436,7 +526,7 @@ class MainWindow:
         tabs = ["待人工", "已回复"]
         for tab in tabs:
             btn = ttk.Button(
-                tab_bar, text=tab, style="Segment.TButton",
+                tab_bar, text=tab, style="Workbench.Segment.TButton",
                 command=lambda t=tab: self._switch_tab(t),
             )
             btn.pack(side=tk.LEFT, padx=(0, SPACE["xs"]))
@@ -445,23 +535,23 @@ class MainWindow:
         self._current_tab = "待人工"
         # 初始化时也要点亮一次选中态，否则一进来两个标签看着都"没选中"
         for name, b in self._tab_buttons.items():
-            b.configure(style="SegmentOn.TButton" if name == self._current_tab
-                        else "Segment.TButton")
+            b.configure(style="Workbench.SegmentOn.TButton" if name == self._current_tab
+                        else "Workbench.Segment.TButton")
 
-        surface = card(tab_frame)
-        surface.pack(fill=tk.BOTH, expand=True)
-        body = card_body(surface)
-        self._list_frame = ttk.Frame(body, style="Card.TFrame")
+        body = tk.Frame(tab_frame, background=COLORS["canvas"],
+                        highlightbackground=COLORS["hairline"], highlightthickness=1)
+        body.pack(fill=tk.BOTH, expand=True)
+        self._list_frame = ttk.Frame(body, style="Workbench.Card.TFrame")
         self._list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
         columns = ("time", "customer", "message", "action")
-        self._tree = ttk.Treeview(self._list_frame, columns=columns, show="headings")
+        self._tree = ttk.Treeview(self._list_frame, columns=columns, show="headings", style="Workbench.Treeview")
         for column, label, width in (("time", "时间", 110), ("customer", "客户", 120),
                                      ("message", "消息", 300), ("action", "处理结果", 100)):
             self._tree.heading(column, text=label, anchor="w")
             self._tree.column(column, width=px(width), anchor="w")
 
-        scrollbar = ttk.Scrollbar(self._list_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        scrollbar = ttk.Scrollbar(self._list_frame, orient=tk.VERTICAL, style="Workbench.Vertical.TScrollbar", command=self._tree.yview)
         self._tree.configure(yscrollcommand=scrollbar.set)
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -474,44 +564,105 @@ class MainWindow:
         # ── 待人工列表（点「待人工」标签时显示）──────────────────────
         # 置信度不足的消息会进这里，附带 AI 推荐回复，可【发送】或【编辑】
 
-        self._pending_frame = ttk.Frame(body, style="Card.TFrame")
-
-        p_columns = ("ptime", "pcustomer", "pmsg", "preply", "pconf", "paction")
-        self._pending_tree = ttk.Treeview(self._pending_frame, columns=p_columns,
-                                          displaycolumns=p_columns[:-1], show="headings")
-        for column, label, width in (("ptime", "时间", 50), ("pcustomer", "客户", 90),
-                                     ("pmsg", "客户消息", 170), ("preply", "AI 推荐回复", 230),
-                                     ("pconf", "置信度", 55)):
-            align = "center" if column == "pconf" else "w"
-            self._pending_tree.heading(column, text=label, anchor=align)
-            self._pending_tree.column(column, width=px(width), anchor=align)
-
-        p_scrollbar = ttk.Scrollbar(self._pending_frame, orient=tk.VERTICAL,
-                                    command=self._pending_tree.yview)
-        self._pending_tree.configure(yscrollcommand=p_scrollbar.set)
-
-        pending_btn_frame = ttk.Frame(self._pending_frame, style="Card.TFrame")
+        self._pending_frame = ttk.Frame(body, style="Workbench.Card.TFrame")
+        self._pending_frame.bind("<Map>", lambda event: self.root.after_idle(self._fit_tree_columns))
+        self._pending_frame.grid_rowconfigure(0, weight=1)
+        self._pending_frame.grid_columnconfigure(2, weight=1)
+        self._queue_panel = tk.Frame(self._pending_frame, width=px(320), background=COLORS["canvas"])
+        self._queue_panel.grid(row=0, column=0, sticky="nsew")
+        self._queue_panel.pack_propagate(False)
+        queue_header = tk.Frame(self._queue_panel, background=COLORS["canvas"])
+        queue_header.pack(fill=tk.X, padx=px(20), pady=(px(24), px(20)))
+        tk.Label(queue_header, text="消息队列", font=font("h3", True),
+                 background=COLORS["canvas"], foreground=COLORS["ink"]).pack(anchor="w")
         self._pending_stats_label = ttk.Label(
-            pending_btn_frame, text="共 0 条待人工", style="Mute.TLabel")
-        self._pending_stats_label.pack(side=tk.LEFT)
-        ttk.Button(pending_btn_frame, text="发送", style="Primary.TButton",
-                   command=self._handle_pending_send).pack(side=tk.RIGHT)
-        ttk.Button(pending_btn_frame, text="编辑", style="Ghost.TButton",
-                   command=self._handle_pending_edit).pack(side=tk.RIGHT, padx=SPACE["sm"])
-        ttk.Button(pending_btn_frame, text="忽略", style="Ghost.TButton",
-                   command=self._handle_pending_ignore).pack(side=tk.RIGHT)
+            queue_header, text="共 0 条待人工", style="Workbench.Mute.TLabel")
+        self._pending_stats_label.pack(anchor="w", pady=(px(8), 0))
+        tk.Frame(self._queue_panel, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
+        tk.Frame(self._pending_frame, width=1, background=COLORS["hairline"]).grid(
+            row=0, column=1, sticky="ns")
 
-        pending_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=px(8), pady=px(8))
-        self._pending_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Keep all original values and stable keys. The list is a compact preview;
+        # the adjacent reading panel presents the complete selected message.
+        p_columns = ("ptime", "pcustomer", "pmsg", "preply", "pconf", "paction")
+        self._pending_tree = ttk.Treeview(
+            self._queue_panel, columns=p_columns, displaycolumns=(), show="tree",
+            selectmode="browse", style="Queue.Workbench.Treeview")
+        self._pending_tree.column("#0", width=px(280), minwidth=px(180))
+        p_scrollbar = ttk.Scrollbar(
+            self._queue_panel, orient=tk.VERTICAL, style="Workbench.Vertical.TScrollbar",
+            command=self._pending_tree.yview)
+        self._pending_tree.configure(yscrollcommand=p_scrollbar.set)
         p_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self._pending_empty = self._empty_label(self._pending_tree, "当前没有待人工处理的消息")
+        self._pending_tree.pack(fill=tk.BOTH, expand=True, padx=(px(8), 0), pady=px(8))
+
+        self._create_pending_detail()
+        self._pending_detail.grid(row=0, column=2, sticky="nsew")
+        self._pending_tree.bind("<<TreeviewSelect>>", self._sync_pending_actions)
+        self._sync_pending_actions()
+        self._pending_empty = self._empty_label(self._pending_tree, "暂无待处理消息")
         self._pending_empty.place(relx=.5, rely=.5, anchor="center")
-
-        self._pending_frame.pack_forget()  # 先隐藏，下面按当前标签显示
-
-        # ★ 默认标签是「待人工」，所以**必须同步一次视图** ——
-        #   否则会出现"高亮在待人工、显示的却是列表"这种自相矛盾的初始状态。
         self._switch_tab(self._current_tab)
+
+    def _create_pending_detail(self):
+        self._pending_content = {}
+        self._pending_status = {}
+        self._pending_detail = tk.Frame(self._pending_frame, background=COLORS["canvas"])
+        self._pending_detail.grid_columnconfigure(0, weight=1)
+        self._pending_detail.grid_rowconfigure(1, weight=2)
+        self._pending_detail.grid_rowconfigure(2, weight=3)
+        heading = tk.Frame(self._pending_detail, background=COLORS["canvas"])
+        heading.grid(row=0, column=0, sticky="ew", padx=px(28), pady=(px(12), px(8)))
+        self._detail_title = tk.Label(
+            heading, text="选择一条消息", anchor="w",
+            background=COLORS["canvas"], foreground=COLORS["ink"], font=font("h2", True))
+        self._detail_title.pack(fill=tk.X)
+        self._detail_meta = tk.Label(
+            heading, text="从左侧队列查看客户问题与回复",
+            background=COLORS["canvas"], foreground=COLORS["ink_mute"], font=font("small"))
+        self._detail_meta.pack(anchor="w", pady=(px(8), 0))
+
+        self._detail_texts = []
+        for index, title in enumerate(("客户消息", "AI 推荐回复")):
+            background = COLORS["canvas"] if index == 0 else COLORS["canvas_soft"]
+            group = tk.Frame(self._pending_detail, background=background)
+            group.grid(row=index + 1, column=0, sticky="nsew",
+                       padx=px(28), pady=(0, px(8)))
+            inset = px(12) if index else 0
+            tk.Label(group, text=title, font=font("small", True), background=background,
+                     foreground=COLORS["ink_mute"]).pack(
+                         anchor="w", padx=inset, pady=(inset, px(8)))
+            area = tk.Frame(group, background=background)
+            area.pack(fill=tk.BOTH, expand=True, padx=inset, pady=(0, inset))
+            text = tk.Text(
+                area, height=1, width=1, wrap="word", font=font("reading"),
+                background=background, foreground=COLORS["ink"],
+                relief="flat", borderwidth=0, highlightthickness=0,
+                exportselection=False, selectbackground=COLORS["primary_subtle"],
+                selectforeground=COLORS["ink"], spacing1=px(2), spacing3=px(6),
+                state="disabled", cursor="arrow")
+            scrollbar = ttk.Scrollbar(
+                area, orient=tk.VERTICAL, style="Workbench.Vertical.TScrollbar",
+                command=text.yview)
+            text.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            text.pack(fill=tk.BOTH, expand=True)
+            self._detail_texts.append(text)
+
+        footer = tk.Frame(self._pending_detail, background=COLORS["canvas"])
+        footer.grid(row=3, column=0, sticky="ew")
+        tk.Frame(footer, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
+        actions = tk.Frame(footer, background=COLORS["canvas"])
+        actions.pack(fill=tk.X, padx=px(24), pady=px(8))
+        self._pending_actions = []
+        for label, style, command, side in (
+            ("发送回复", "Workbench.Primary.TButton", self._handle_pending_send, tk.RIGHT),
+            ("编辑回复", "Workbench.Secondary.TButton", self._handle_pending_edit, tk.RIGHT),
+            ("忽略", "Workbench.Ghost.TButton", self._handle_pending_ignore, tk.LEFT),
+        ):
+            button = ttk.Button(actions, text=label, style=style, command=command)
+            button.pack(side=side, padx=(px(8), 0) if side == tk.RIGHT else 0)
+            self._pending_actions.append(button)
 
     @staticmethod
     def _empty_label(tree, text):
@@ -533,7 +684,7 @@ class MainWindow:
         #   现在：默认**不置顶**，这里一键开/关，写回 config.json 重启也记得。
         #   留在底部是因为它在所有标签页都可见（设置页翻起来麻烦）。
         self._topmost_on = tk.BooleanVar(value=always_on_top_enabled())
-        ttk.Checkbutton(self._footer, text="窗口置顶", variable=self._topmost_on,
+        ttk.Checkbutton(self._footer, text="窗口置顶", style="Workbench.TCheckbutton", variable=self._topmost_on,
                         command=self._toggle_topmost).pack(side=tk.RIGHT, padx=SPACE["lg"],
                                                          pady=SPACE["xs"])
         self._create_status_bar(self._footer)
@@ -573,7 +724,7 @@ class MainWindow:
         self._pause_btn.config(text="开始")
         self._status_label.config(text="状态：未启动")
         one_line = " ".join((why or "").split())
-        self.set_banner(f"⚠️ {one_line}", level="error")
+        self.set_banner(f"⚠️ {one_line}", level="error", blocks_start=True)
         try:
             go = messagebox.askyesno("还不能开始", f"{why}\n\n现在打开「设置」？")
         except Exception:
@@ -594,6 +745,7 @@ class MainWindow:
         self._paused = not self._paused
         if hasattr(self, "_run_icons"):
             self._pause_btn.configure(image=self._run_icons["play" if self._paused else "stop"])
+            self._paint_service_status()
         if self._paused:
             self._pause_btn.config(text="开始")
             self._status_label.config(text="状态：未启动")
@@ -617,8 +769,8 @@ class MainWindow:
         self._current_tab = tab
         # 选中的标签用"选中态"样式（靛蓝浅底 + 靛蓝字），一眼看出在看哪一页
         for name, btn in self._tab_buttons.items():
-            btn.configure(style="SegmentOn.TButton" if name == tab
-                          else "Segment.TButton")
+            btn.configure(style="Workbench.SegmentOn.TButton" if name == tab
+                          else "Workbench.Segment.TButton")
         if tab == "待人工":
             self._list_frame.pack_forget()
             self._pending_frame.pack(fill=tk.BOTH, expand=True)
@@ -716,6 +868,9 @@ class MainWindow:
     def _on_close(self):
         """关闭窗口"""
         import logging as _log
+        if getattr(self, "_web_page_busy", False):
+            messagebox.showinfo("请稍候", "资料操作仍在进行，完成后再退出可避免中断保存。")
+            return
         if messagebox.askyesno("退出", "确定要退出吗？"):
             self._should_exit = True
             self._paused = True
@@ -776,6 +931,17 @@ class MainWindow:
         **一条消息一行**（不是一个人一行）：同一个人问了两件事就要处理两次。
         行定位用 ``item.key`` 而不是客户名 —— 否则同一个人的两行点哪行都一样。
         """
+        from gui.web_workbench import serialize_pending
+        self._web_pending_rows = serialize_pending(pending_items)
+        selection = self._pending_tree.selection()
+        selected_key = str(self._pending_tree.item(selection[0], "values")[5]) if selection else None
+        if hasattr(self, "_pending_content"):
+            self._pending_content = {
+                str(item.key): (item.customer_name, item.customer_message, item.ai_reply or "")
+                for item in pending_items
+            }
+        if hasattr(self, "_pending_status"):
+            self._pending_status = {}
         for item in self._pending_tree.get_children():
             self._pending_tree.delete(item)
 
@@ -793,13 +959,16 @@ class MainWindow:
             draft = (item.ai_reply or "").strip() or "（AI 没给草稿，点【编辑】自己写）"
             status = getattr(item, "send_status", "pending")
             label = {"queued": "待发送", "failed": "发送失败·可重试", "unknown": "待核实·勿重复发送"}.get(status)
+            if hasattr(self, "_pending_status"):
+                self._pending_status[str(item.key)] = label or "待人工确认"
             if label:
                 draft = f"【{label}】{draft}"
             who = item.customer_name
             if per_person[item.customer_name] > 1:
                 who = f"{who} [{per_person[item.customer_name]}条]"
-            self._pending_tree.insert(
+            row_id = self._pending_tree.insert(
                 "", tk.END,
+                text=f"{who}  ·  {time_str}\n{item.customer_message[:14]}{'…' if len(item.customer_message) > 14 else ''}",
                 values=(
                     time_str,
                     who,
@@ -810,6 +979,8 @@ class MainWindow:
                     item.key,             # hidden: 动作时按它定位这一行
                 ),
             )
+            if str(item.key) == selected_key:
+                self._pending_tree.selection_set(row_id)
 
         n = len(pending_items)
         people = len(per_person)
@@ -825,6 +996,33 @@ class MainWindow:
         btn = self._tab_buttons.get("待人工")
         if btn is not None:
             btn.config(text=f"待人工 ({n})" if n else "待人工")
+
+        if hasattr(self, "_pending_actions"):
+            self._sync_pending_actions()
+
+    def _sync_pending_actions(self, _event=None):
+        state = ("!disabled",) if self._pending_tree.selection() else ("disabled",)
+        for button in self._pending_actions:
+            button.state(state)
+        selection = self._pending_tree.selection()
+        key = str(self._pending_tree.item(selection[0], "values")[5]) if selection else None
+        content = self._pending_content.get(key)
+        self._detail_title.configure(
+            text=content[0] if content else "选择一条消息")
+        if selection:
+            row_values = self._pending_tree.item(selection[0], "values")
+            status = self._pending_status.get(key, "待人工确认")
+            self._detail_meta.configure(text=f"{row_values[0]}  ·  置信度 {row_values[4]}  ·  {status}")
+        else:
+            self._detail_meta.configure(text="从左侧队列查看客户问题与回复")
+        values = (content[1], content[2] or "AI 未提供草稿，可点「编辑」填写回复") if content else ("", "")
+        for text, value in zip(self._detail_texts, values):
+            if text.get("1.0", "end-1c") == value:
+                continue
+            text.configure(state="normal")
+            text.delete("1.0", tk.END)
+            text.insert("1.0", value)
+            text.configure(state="disabled")
 
     def _selected_pending_key(self):
         """选中那一行的 key（``人::消息指纹``），界面动作全靠它。"""

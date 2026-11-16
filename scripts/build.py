@@ -16,6 +16,8 @@
 """
 
 import shutil
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,28 +57,38 @@ USAGE_TXT = """企业微信智能客服机器人 —— 使用说明（简版）
 ================================================
 
 【系统要求】
-  Windows 10 / 11 64 位。首次启动要加载识别与向量模型，约 30~90 秒，请耐心等。
+  Windows 10 / 11 64 位。启动直接打开新版工作区，本地向量模型在首次检索时加载。
 
 【第一次使用（4 步）】
   1. 双击「启动.bat」
-  2. 界面右上「设置」→ 填接口地址和 API Key →「拉取模型」→ 选择模型 → 保存
+  2. 程序会打开独立桌面工作区，左侧「设置」→ 填接口地址和 API Key →「拉取模型」→ 选择模型 → 保存
      ★ 密钥框第一次是**空的**，把你自己申请的 Key 粘进去。
        填完点「测试连接」：通了会显示 ✓，不通会说清是密钥不对、模型名不对还是地址不通。
-     ★ **没填 Key 点「开始」会被拦下**（会弹窗送你到「设置」）——
+     ★ **没填 Key 点「开始」会被拦下**（页面提示先完成「设置」）——
        因为没配接口时它答不了业务问题，却仍会给客户回"稍等我确认一下"，等于空头承诺。
   3. 设置里选「企业微信 · 截图模式」，然后打开企业微信 PC 版并登录
-  4. 界面点「开始」→ 之后它只处理**开始之后**收到的新消息
+  4. 左下角点击「启动自动回复」→ 之后它只处理**开始之后**收到的新消息
+     关闭窗口会退出程序；也可使用「设置 → 应用 → 退出程序」。
+     再次双击启动入口，会唤回已运行的新版窗口。
+     新版窗口启动失败时，会显示备用窗口，可点击「打开新版工作台」重试。
 
   ★ 更详细的步骤（含排错、API 模式、资料库用法）见同目录：
      使用说明-详细.md   （推荐先扫一眼「常见问题」那一节）
 
 【资料库（你的业务知识）】
-  已内置一份示例资料（相机租赁）供你试跑。
-  换成你自己的：知识库 → 资料库 → 「选择文件…」上传（txt / md / csv / Excel / Word）
-  → 点「重建索引」。上传完可以在「试问一句」里验证它答得对不对。
+  保留当前业务资料、源文件与提示词，首次使用请核对资料是否适用于自己的业务。
+  「资料库 → 导入文件」支持 txt / md / csv / Excel / Word，成功后自动更新索引。
+  「AI 整理」会先预览原文与问答，核对并选中后才写入。
+  上传后可在「试问一句」验证检索。重建索引会丢弃仅手动新增的条目，请谨慎使用。
 
 【提示词（说话方式）】
-  知识库 → 提示词：系统提示、欢迎语、闲聊、占位语都能改，改完点保存立即生效。
+  左侧「提示词」：业务回复、欢迎语、闲聊、占位语都能改，保存后立即生效。
+  左侧「学到的」：查看语气学习、删除或屏蔽不合适的记录、确认新的业务事实。
+
+【消息与数据】
+  「待人工」核对原话和草稿，可编辑后发送、忽略或核实发送结果。
+  「全部消息 / 已回复」支持搜索、详情与 CSV 导出。
+  「数据看板」查看日期范围内的接待、自动解决率、处理分类与待补充资料。
 
 【隐私】
   * 客户聊天记录只存在本机 data\\context\\，本程序不上传。
@@ -106,6 +118,9 @@ def ensure_bge_model():
 
 def clean():
     for d in (ROOT / "build", ROOT / "dist"):
+        resolved = d.resolve()
+        if resolved.parent != ROOT.resolve() or resolved.name not in ("build", "dist"):
+            raise RuntimeError("拒绝清理项目外的路径")
         if d.exists():
             shutil.rmtree(d)
     print("[1/6] Cleaned old build artifacts")
@@ -187,6 +202,26 @@ def copy_extras():
                 shutil.copy2(f, DIST / "data" / "chat_raw" / f.name)
         print(f"   已复制示例资料 {sum(1 for f in DEMO_SRC.iterdir() if f.suffix.lower() in keep_ext)} 个")
 
+    # Uploaded source documents are required for rebuilding the existing index.
+    # Only current files are included; revision backups and learned/customer data stay out.
+    for folder in (DEMO_SRC / "uploaded", DEMO_SRC / "archives"):
+        if folder.exists():
+            for f in folder.rglob("*"):
+                rel = f.relative_to(DEMO_SRC)
+                if f.is_file() and f.suffix.lower() in keep_ext and not any(part.startswith(".") for part in rel.parts):
+                    dst = DIST / "data" / "chat_raw" / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dst)
+    manifest = ROOT / "data" / "kb" / "archives.json"
+    if manifest.exists():
+        shutil.copy2(manifest, DIST / "data" / "kb" / "archives.json")
+        for archive in json.loads(manifest.read_text(encoding="utf-8"))["archives"]:
+            name = archive["collection"]
+            if Path(name).name != name or name in (".", ".."):
+                raise ValueError("资料库索引名称无效")
+            if name != "knowledge_base":
+                _copy_tree(KB_SRC / "collection" / name, DIST / "data" / "qdrant" / "collection" / name, name)
+
     # 看板示例数据（600 条离线评测回放；客户名全虚构）—— 让看板一开就有东西看
     if DEMO_STATS_SRC.exists():
         _copy_tree(DEMO_STATS_SRC, DIST / "data" / "demo_stats", "看板示例数据")
@@ -201,6 +236,8 @@ def copy_extras():
     #    简版 txt 给"解压就想用"的人；详细版直接复制仓库里的 docs/使用说明.md
     #    —— 单一源头：改文档只改那一份，打包自动带上，不会两处不一致。
     (DIST / "使用说明.txt").write_text(USAGE_TXT, encoding="utf-8")
+    shutil.copy2(ROOT / "web" / "workbench" / "THIRD_PARTY_NOTICES.txt", DIST / "UI-开源许可.txt")
+    shutil.copy2(DOCS_DIR / "界面更新-1.5.0.md", DIST / "界面更新-1.5.0.md")
     print("   已写 使用说明.txt")
     detail = DOCS_DIR / "使用说明.md"
     if detail.exists():
@@ -230,11 +267,16 @@ def verify():
                 "使用说明.txt", "使用说明-详细.md",
                 "prompts/system.md", "profiles/wecom.json",
                 "data/qdrant/meta.json",
-                "data/qdrant/collection/knowledge_base/storage.sqlite"]
+                "data/qdrant/collection/knowledge_base/storage.sqlite",
+                "_internal/web/workbench/bundle/index.html"]
     missing = [f for f in required if not (DIST / f).exists()]
     if missing:
         print(f"\n[ERROR] dist 里缺这些文件: {missing}")
         sys.exit(1)
+    web = DIST / "_internal" / "web" / "workbench" / "bundle"
+    references = re.findall(r'(?:src|href)="(/assets/[^\"]+)"', (web / "index.html").read_text(encoding="utf-8"))
+    if not references or any(not (web / name.lstrip("/")).is_file() for name in references):
+        raise RuntimeError("工作台引用的脚本或样式缺失，请重新构建前端并打包")
 
     # 内置模型与 OCR 资源（缺了会在别的电脑上崩）
     for f in ("_internal/bge_model/model.safetensors",
@@ -256,6 +298,8 @@ def report():
 
 
 if __name__ == "__main__":
+    frontend = ROOT / "web" / "workbench"
+    subprocess.run(["node", str(frontend / "node_modules/vite/bin/vite.js"), "build"], cwd=frontend, check=True)
     # --skip-pyinstaller：PyInstaller 那步很慢（10 分钟级）。
     # 改完打包组装逻辑（复制哪些文件、隐私白名单）时，用它可以快速重跑后面几步。
     if "--skip-pyinstaller" in sys.argv:

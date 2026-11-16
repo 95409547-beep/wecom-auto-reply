@@ -35,7 +35,9 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-HERE = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+HERE = app_dir()
 
 # 提示词跟资料库档案走：第一个档案用 prompts/，新建的档案用 prompts/<档案>/
 # （显式赋值可覆盖，测试和"从别的档案复制一份"都靠这个）

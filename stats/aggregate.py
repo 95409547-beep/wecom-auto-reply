@@ -32,7 +32,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+ROOT = app_dir()
 
 # 一次"接待"由哪些 source 构成
 REPLY_SOURCES = ("auto", "hold")          # 机器人发出的（计入接待）

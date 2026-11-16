@@ -12,6 +12,8 @@ from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 # that PyInstaller's analysis misses.
 
 hiddenimports = [
+    "webview.platforms.winforms",
+    "webview.platforms.edgechromium",
     # PyTorch + CUDA (CPU-only build, but keep for safety)
     "torch",
     "torch.nn",
@@ -81,6 +83,7 @@ def _dist_info(name: str):
 
 
 datas = [
+    ("assets/app.ico", "assets"),
     ("config.json", "."),
     (".env.example", "."),
     # ★ 绝对不能写 ("data", "data")：那会把 data/context（真实客户聊天记录）、
@@ -88,6 +91,7 @@ datas = [
     #   客户数据一起发出去。运行时的 data/ 由 scripts/build.py 组装到
     #   dist/WeComBot/data/（程序按 CWD 相对路径读写）。
     ("prompts", "prompts"),                           # 提示词（用户要求保留）
+    ("web/workbench/bundle", "web/workbench/bundle"),   # 本地 Web 工作台，无需 Node 运行时
     ("profiles", "profiles"),                         # 窗口标定（wxbot/profile.py 按 __file__ 找）
     ("bge_model", "bge_model"),                       # BGE model (~92MB, offline)
 ]
@@ -101,6 +105,7 @@ datas.append((str(build_id_file), "."))
 # RapidOCR 自带 PP-OCRv4 onnx 模型（det 4.5MB / rec 10.4MB / cls 0.6MB），
 # 必须打进包，否则打包版要联网下载模型。
 datas += collect_data_files("rapidocr_onnxruntime")
+datas += collect_data_files("webview")
 
 _imageio = _dist_info("imageio")
 if _imageio is not None:
@@ -138,9 +143,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # Real one-folder build: no repeated 390 MB extraction at launch.
     name="启动",
     debug=False,
     bootloader_ignore_signals=False,
@@ -154,7 +158,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon="assets/app.ico",
 )
 
 coll = COLLECT(

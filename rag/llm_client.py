@@ -133,6 +133,9 @@ async def list_models(base_url: str, api_key: str) -> list[str]:
         else:
             detail = f"接口返回 HTTP {status}，请稍后重试。"
         raise RuntimeError(detail) from None
+    except FileNotFoundError:
+        logger.warning("拉取模型时缺少 HTTPS 客户端运行文件")
+        raise RuntimeError("无法加载 HTTPS 连接所需的文件，请检查软件安装是否完整。") from None
     except Exception:
         raise RuntimeError("未能获取有效的模型列表，请检查接口地址。") from None
 

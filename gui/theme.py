@@ -8,24 +8,24 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-# Neutral surfaces and monochrome controls; colour is reserved for status.
+# Cool neutral surfaces and a deep teal accent for actions and selection.
 COLORS = {
     "canvas": "#ffffff",
-    "canvas_soft": "#ffffff",
-    "canvas_sunken": "#f0f0f0",
-    "sidebar": "#f9f9f9",
-    "hairline": "#ebebeb",
+    "canvas_soft": "#f5f7f8",
+    "canvas_sunken": "#edf2f3",
+    "sidebar": "#eaf0f2",
+    "hairline": "#dce5e8",
     "hairline_strong": "#d4d4d4",
-    "ink": "#202020",
-    "ink_secondary": "#404040",
-    "ink_mute": "#707070",
+    "ink": "#182b34",
+    "ink_secondary": "#384e58",
+    "ink_mute": "#526973",
     "ink_faint": "#767676",
     "on_primary": "#ffffff",
-    "primary": "#212121",
-    "primary_deep": "#383838",
-    "primary_press": "#111111",
-    "primary_soft": "#858585",
-    "primary_subtle": "#eaeaea",
+    "primary": "#146454",
+    "primary_deep": "#0d5245",
+    "primary_press": "#094136",
+    "primary_soft": "#467969",
+    "primary_subtle": "#dcece7",
     "success": "#187343",
     "success_bg": "#e8f6ee",
     "warning": "#7a530a",
@@ -86,7 +86,7 @@ def detect_dpi_scale(root: tk.Misc) -> float:
 #   缩放只由我们自己控制一次，尺寸可预测。
 SIZES = {
     "kpi": 28,       # 大数字
-    "h1": 20,        # 页面标题
+    "h1": 26,        # 页面标题
     "h2": 18,        # 卡片标题
     "h3": 14,        # 小节标题
     "body": 14,      # 正文
@@ -127,9 +127,9 @@ def _configure_buttons(root, style):
         "Ghost.TButton": (c["canvas"], c["canvas_sunken"], None, c["ink_secondary"], False),
         "Danger.TButton": (c["canvas"], c["danger_bg"], None, c["danger"], False),
         "Segment.TButton": (c["canvas"], c["canvas_sunken"], None, c["ink_mute"], False),
-        "SegmentOn.TButton": (c["canvas_sunken"], c["primary_subtle"], None, c["ink"], False),
+        "SegmentOn.TButton": (c["primary_subtle"], c["primary_subtle"], None, c["primary_deep"], True),
         "Page.TButton": (c["sidebar"], c["hairline"], None, c["ink"], False),
-        "PageOn.TButton": (c["primary_subtle"], "#e2e2e2", None, c["ink"], False),
+        "PageOn.TButton": (c["primary_subtle"], c["primary_subtle"], None, c["primary_deep"], False),
     }
     app = root._root()
     assets = getattr(app, "_button_images", None)

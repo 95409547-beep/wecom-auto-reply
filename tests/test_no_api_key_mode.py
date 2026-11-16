@@ -90,7 +90,7 @@ def test_can_start_allows_with_key(no_key, monkeypatch):
     from rag import llm_client
     monkeypatch.setattr(
         llm_client, "resolve_config",
-        lambda: ("sk-99429abcdef0123456789abcdef0123",
+        lambda: ("test-llm-api-key",
                  "https://api.deepseek.com/v1", "deepseek-chat"))
     import main
     assert main._can_start()[0] is True
@@ -138,12 +138,14 @@ def test_refuse_start_sends_user_to_settings(monkeypatch):
     stub = types.SimpleNamespace(
         _pause_btn=_Lbl(), _status_label=_Lbl(),
         on_settings=lambda: calls.append("settings"),
-        set_banner=lambda text, level=None: calls.append(("banner", text, level)),
+        set_banner=lambda text, level=None, *, blocks_start=False: calls.append(
+            ("banner", text, level, blocks_start)
+        ),
     )
     mw.MainWindow._refuse_start(stub, "还没配模型接口，不能开始。")
 
     banners = [c for c in calls if isinstance(c, tuple) and c[0] == "banner"]
-    assert banners and banners[0][2] == "error"
+    assert banners and banners[0][2:] == ("error", True)
     assert "settings" in calls, "点「是」应该直接打开设置面板"
 
 
@@ -161,7 +163,7 @@ def test_refuse_start_survives_dialog_failure(monkeypatch):
         _pause_btn=types.SimpleNamespace(config=lambda **k: None),
         _status_label=types.SimpleNamespace(config=lambda **k: None),
         on_settings=lambda: None,
-        set_banner=lambda text, level=None: None,
+        set_banner=lambda text, level=None, *, blocks_start=False: None,
     )
     mw.MainWindow._refuse_start(stub, "不能开始")     # 不该抛
 
@@ -214,14 +216,16 @@ def test_toggle_pause_stays_stopped_when_guard_refuses(monkeypatch):
         on_settings=None,
         on_resume=lambda: started.append("resume"),
         on_pause=lambda: started.append("pause"),
-        set_banner=lambda text, level=None: banners.append((text, level)),
+        set_banner=lambda text, level=None, *, blocks_start=False: banners.append(
+            (text, level, blocks_start)
+        ),
     )
     w._toggle_pause()
 
     assert w._paused is True, "守卫拒绝后不能变成运行中"
     assert w._pause_btn.text == "开始", "按钮文字不能变成「停止」"
     assert started == [], "不能触发 on_resume"
-    assert banners and banners[-1][1] == "error"
+    assert banners and banners[-1][1:] == ("error", True)
 
 
 def test_toggle_pause_starts_when_guard_allows():

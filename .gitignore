@@ -88,6 +88,7 @@ debug/__pycache__/
 .claude/settings.json
 node_modules/
 package-lock.json
+!web/workbench/package-lock.json
 
 # ── 系统文件 ─────────────────────────────────────────────────────
 .DS_Store
@@ -104,4 +105,5 @@ WeComBot-v*.zip
 
 # 看板示例数据（由 scripts/make_demo_stats.py 生成，可重跑，不入库）
 data/demo_stats/
+data/desktop-cache/
 

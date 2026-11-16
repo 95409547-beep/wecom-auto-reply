@@ -23,7 +23,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-HERE = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+HERE = app_dir()
 
 # 改动历史跟资料库档案走（第一个档案 data/kb_history.jsonl，新建的 data/kb_history_<档案>.jsonl）
 HISTORY_PATH: Optional[Path] = None

@@ -5,6 +5,8 @@ BAAI/bge-small-zh-v1.5: ~100MB, CPU-friendly, optimized for Chinese retrieval.
 No API key, no network, completely offline.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
@@ -14,7 +16,9 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import logging
-from sentence_transformers import SentenceTransformer
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,7 @@ def _resolve_model_path() -> str | Path:
 def get_model() -> SentenceTransformer:
     global _model
     if _model is None:
+        from sentence_transformers import SentenceTransformer
         model_path = _resolve_model_path()
         logger.info(f"Loading embedding model: {model_path}")
         _model = SentenceTransformer(str(model_path))

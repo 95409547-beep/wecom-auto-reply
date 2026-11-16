@@ -35,7 +35,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-HERE = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+HERE = app_dir()
 
 DEFAULT_ID = "photo"                  # 老库升上来的第一个档案
 DEFAULT_NAME = "摄影器材租赁"

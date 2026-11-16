@@ -38,8 +38,8 @@
     "title_hint": "企业微信"
   },
   "columns": {
-    "col1_width_px": 100,
-    "col2_width_px": 364,
+    "col1_width_px": 60,
+    "col2_width_px": 250,
     "col1_width_ratio": 0.0701,
     "col2_width_ratio": 0.26,
     "boundary_strip_width": 100,
@@ -51,15 +51,15 @@
   },
   "crop": {
     "chat_area": {
-      "top_margin_px": 100,
-      "bottom_margin_px": 240,
-      "right_margin_ratio": 0.3,
+      "top_margin_px": 64,
+      "bottom_margin_px": 154,
+      "right_margin_ratio": 0.343,
       "top_crop_ratio": 0.12,
       "bottom_crop_ratio": 0.7
     },
     "name_row": {
-      "top_offset": -16,
-      "bottom_offset": 56
+      "top_offset": -8,
+      "bottom_offset": 38
     },
     "click_position": {
       "col2_row_x_ratio": 0.333,
@@ -208,8 +208,9 @@
   },
   "fallback": {
     "start_y_ratio": 0.0747,
-    "row_height_px": 94,
-    "max_scan_rows": 6
+    "row_height_px": 63,
+    "max_scan_rows": 14,
+    "start_y_px": 80
   },
   "logging": {
     "level": "INFO",
@@ -283,5 +284,9 @@
       "timeout_seconds": 6,
       "_timeout_comment": "判断超时就退回规则层。客户在等，别设太大；默认 6 秒。"
     }
+  },
+  "customers": {
+    "require_whitelist": true,
+    "whitelist": []
   }
 }

@@ -18,6 +18,22 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+if getattr(sys, "frozen", False):
+    os.chdir(Path(sys.executable).resolve().parent)
+
+if __name__ == "__main__" and "--desktop-window" in sys.argv:
+    from gui.desktop_host import run
+    run()
+    sys.exit(0)
+
+if "--restart-delay" in sys.argv:
+    time.sleep(4)
+
+if __name__ == "__main__" and os.environ.get("WECOM_WEB_UI", "1") != "0" and "--restart-delay" not in sys.argv:
+    from app_session import reopen_running
+    if reopen_running():
+        sys.exit(0)
+
 # ═══ 日志配置必须在所有 import 之前，否则 basicConfig 会被忽略 ═══
 os.makedirs("logs", exist_ok=True)
 # ★ 日志路径可用环境变量覆盖（`WECOM_LOG_PATH`）。
@@ -91,7 +107,7 @@ try:
 except Exception:
     pass
 
-# 注意: torch 必须在 paddle 之前导入，否则 DLL 冲突
+# Heavy embedding dependencies are loaded only when retrieval/import is needed.
 from rag.responder import Responder
 from rag.human_fallback import PendingQueue
 from rag import unanswered
@@ -261,7 +277,10 @@ def _main_impl():
         window.set_banner(f"「{key}」提示词已保存，立即生效。", level="ok")
 
     window = MainWindow(on_settings=_open_settings, on_kb=_open_kb,
-                        on_dashboard=_open_dashboard, can_start=_can_start)
+                        on_dashboard=_open_dashboard, can_start=_can_start,
+                        web_mode=os.environ.get("WECOM_WEB_UI", "1") != "0")
+    from gui.web_services import WebServices
+    window.web_services = WebServices(cfg, getattr(responder, "qdrant", None))
 
     # 待人工队列：置信度不足的消息连同 AI 草稿一起放这里，
     # 在 GUI「待人工」页可以选择直接发送或编辑后发送
@@ -347,7 +366,7 @@ def _main_impl():
                     "「开始」会被拦下 —— 否则客户会收到占位语却没人处理。")
         window.set_banner(
             "⚠️ 还没配模型接口 —— 点「开始」会被拦下。"
-            "请点「设置」填 API Key（任意 OpenAI 兼容服务）。", level="error")
+            "请点「设置」填 API Key（任意 OpenAI 兼容服务）。", level="error", blocks_start=True)
 
     _check_llm_ready()
 
@@ -1317,6 +1336,8 @@ def _main_impl():
     # data/state/pending_queue.json 恢复，GUI 不会自动显示）
     _refresh_pending_tab()
 
+    if os.environ.get("WECOM_WEB_UI", "1") != "0":
+        root.after(300, window._open_web_workbench)
     root.mainloop()
     log.info("已退出")
 

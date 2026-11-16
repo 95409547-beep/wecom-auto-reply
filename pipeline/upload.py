@@ -37,7 +37,9 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-HERE = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+HERE = app_dir()
 
 # 源目录跟资料库档案走：第一个档案 data/chat_raw/uploaded/（老位置，不搬家），
 # 新建的档案 data/chat_raw/archives/<档案>/。显式赋值可覆盖（测试用）。
@@ -331,7 +333,9 @@ def parse_records(path: os.PathLike) -> Tuple[str, Optional[List[str]]]:
     if suffix == ".docx":
         return _parse_docx(p)
 
-    return _read_text(p), None          # txt / md：交给通用切块器
+    from pipeline.game_faq import parse_game_faq
+    text = _read_text(p)
+    return text, parse_game_faq(text) if suffix == ".txt" else None
 
 
 def parse_file(path: os.PathLike) -> str:
@@ -498,7 +502,8 @@ def _commit_upload(staged: Path, dest: Path, points: list, qdrant,
 # ── 批量导入 ──────────────────────────────────────────────────────────
 
 def import_files(paths: List[os.PathLike], qdrant, collection: str = None,
-                 progress: Optional[Callable[[str], None]] = None) -> dict:
+                 progress: Optional[Callable[[str], None]] = None, *,
+                 archive_id: Optional[str] = None) -> dict:
     """批量导入。返回 ``{"ok": [...], "failed": [{file, reason}], "chunks": n}``。
 
     ``progress`` 每步回调一次（界面用来刷状态），**跑在后台线程里**。
@@ -506,8 +511,16 @@ def import_files(paths: List[os.PathLike], qdrant, collection: str = None,
     """
     from pipeline.chunker import split_text
     from pipeline.embedder import build_points, embed_and_store
-    collection = collection or active_collection()
-    directory = upload_dir()
+    if archive_id is not None:
+        from rag import archives
+        archive = archives.get(archive_id)
+        if not archive or (collection and collection != archive["collection"]):
+            raise ValueError("导入目标资料库档案不匹配")
+        collection = archive["collection"]
+        directory = archives.upload_dir(archive_id)
+    else:
+        collection = collection or active_collection()
+        directory = upload_dir()
 
     def say(msg):
         logger.info(msg)

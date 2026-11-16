@@ -32,6 +32,11 @@ def test_confident_cases_do_not_ask_llm(text):
     assert classify_message_ex(text)[1] is True, text
 
 
+@pytest.mark.parametrize("text", ["西游神传礼包码怎么兑换？", "激活码用不了", "CDK怎么兑换"])
+def test_game_code_questions_use_the_knowledge_base(text):
+    assert classify_message_ex(text) == ("business", True)
+
+
 @pytest.mark.parametrize("text", [
     "支持哪些支付方式", "最贵的是哪台", "拍短视频预算200一天",
 ])

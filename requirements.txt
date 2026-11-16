@@ -35,6 +35,7 @@ pynput==1.8.2
 pyautogui==0.9.54
 mss==10.2.0
 psutil==7.2.2
+pywebview==6.2.1
 
 # ── 资料库上传：Excel / Word 解析 ──────────────────────────────────
 openpyxl==3.1.5

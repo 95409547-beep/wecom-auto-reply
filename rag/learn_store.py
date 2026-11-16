@@ -33,7 +33,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-HERE = Path(__file__).resolve().parent.parent
+from app_paths import app_dir
+
+HERE = app_dir()
 
 # 学到的语气跟资料库档案走：第一个档案用 data/learned/，新建的档案用 data/learned/<档案>/
 # （显式赋值可覆盖，测试用）

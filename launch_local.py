@@ -15,6 +15,9 @@ def configure_runtime(app_dir: Path) -> None:
     if (app_dir / "runtime/tcl/tcl8.6/init.tcl").is_file():
         os.environ["TCL_LIBRARY"] = "runtime/tcl/tcl8.6"
         os.environ["TK_LIBRARY"] = "runtime/tcl/tk8.6"
+    elif (app_dir / "_internal/python/tcl/tcl8.6/init.tcl").is_file():
+        os.environ["TCL_LIBRARY"] = "_internal/python/tcl/tcl8.6"
+        os.environ["TK_LIBRARY"] = "_internal/python/tcl/tk8.6"
     os.environ["WECOM_AUTOSTART"] = "0"
     os.environ.setdefault("HF_HOME", str(app_dir / "models/huggingface"))
     os.environ.setdefault("HF_HUB_OFFLINE", "1")

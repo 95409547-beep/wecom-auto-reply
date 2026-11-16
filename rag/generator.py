@@ -133,10 +133,11 @@ def build_prompt(
 # 对话历史里自己的上一句话）；加"不要重复自己"规则后每次都换说法，
 # 再叠加风格提示后明显更像真人在聊天。
 STYLE_NUDGES = [
-    "口语一点，简短直接",
-    "热情一些，多说一句贴心话",
-    "专业简洁，重点先行",
-    "像老朋友一样随意一点",
+    "直接给结论，再补充必要条件",
+    "用自然的微信口语说明，避免照抄之前的开头",
+    "有操作步骤时按实际操作顺序讲；寒暄用简短的一句话",
+    "从客户关心的操作或结果说起，换一种自然的句式",
+    "简明友好，按问题的重点调整信息顺序和详略",
 ]
 
 
@@ -166,17 +167,65 @@ def set_style(style: str = None) -> None:
     STYLE_OVERRIDE = style
 
 
+def _wording_key(text: str) -> str:
+    """Ignore punctuation and whitespace when checking a repeated reply."""
+    return re.sub(r"[\W_]+", "", text.casefold())
+
+
+async def _generate_with_variation(
+    messages: list[dict],
+    channel: str,
+    max_tokens: int,
+    history: Optional[list[dict]] = None,
+) -> str:
+    style = STYLE_OVERRIDE or random.choice(STYLE_NUDGES)
+    instruction = f"本次措辞风格：{style}。保持游戏、条件、数字和处理结果一致。"
+    styled = [dict(messages[0], content=messages[0]["content"] + "\n\n" + instruction),
+              *messages[1:]]
+    options = {"temperature": TEMPERATURE[channel], "max_tokens": max_tokens}
+    reply = (await chat(styled, **options) or "").strip()
+    key = _wording_key(reply)
+    if STYLE_OVERRIDE or not key or "需要人工处理" in key or "需要帮您确认" in key:
+        return reply
+
+    recent = {_wording_key(turn.get("text") or "")
+              for turn in (history or [])[-3:] if turn.get("role") == "assistant"}
+    if key not in recent:
+        return reply
+    alternate = random.choice([hint for hint in STYLE_NUDGES if hint != style])
+    rewrite = (
+        f"上一种句式与该玩家近期收到的回复重复。请按「{alternate}」重答，"
+        "改变开头和句式。只使用原问题和知识片段，保留适用条件与数字。"
+    )
+    retry = [dict(messages[0], content=messages[0]["content"] + "\n\n" + rewrite),
+             *messages[1:]]
+    try:
+        alternative = (await chat(retry, **options) or "").strip()
+    except Exception:
+        logger.debug("回复换句式失败，沿用首个草稿", exc_info=True)
+        alternative = ""
+    revised_key = _wording_key(alternative)
+    if ("需要人工处理" in revised_key or "需要帮您确认" in revised_key
+            or (revised_key and revised_key not in recent
+                and set(re.findall(r"\d+(?:\.\d+)?", alternative))
+                == set(re.findall(r"\d+(?:\.\d+)?", reply)))):
+        return alternative
+    if channel != "reply":
+        return reply
+    openings = ("我再说一下，", "再给你确认一下，", "我换个说法哈，", "我再说明一下，")
+    variants = [opening + reply for opening in openings
+                if _wording_key(opening + reply) not in recent]
+    return random.choice(variants)
+
+
 async def generate_reply(
     question: str,
     context_chunks: list[str],
     history: Optional[list[dict]] = None,
 ) -> str:
     """Generate a reply using DeepSeek with knowledge context and history."""
-    messages = build_prompt(question, context_chunks, history=history,
-                            style=STYLE_OVERRIDE or random.choice(STYLE_NUDGES))
-    reply = await chat(messages, temperature=TEMPERATURE["reply"],
-                       max_tokens=512)
-    return reply.strip()
+    messages = build_prompt(question, context_chunks, history=history)
+    return await _generate_with_variation(messages, "reply", 512, history)
 
 
 # ── 转人工时发给客户的"稍等"占位语 ─────────────────────────────────
@@ -185,13 +234,12 @@ HOLD_SYSTEM_PROMPT = """客户问了一句话，你需要先礼貌地告诉客�
 
 规则：
 1. **必须提到客户问的具体内容**，把客户问的东西换个说法说出来。
-   例如客户问"适合滑雪的机器"，就回"帮您问下适合滑雪的机器"；
-   客户问"有 GoPro 吗"，就回"帮您确认一下有没有 GoPro"。
+   例如客户问"礼包还没到账"，就回"我帮你查一下礼包发放情况，稍等哈"。
+   如果游戏归属不清，可以先问游戏名和区服。
 2. 只表达"我去确认、请稍等"，**不要给出针对客户这一单的任何结论**
-   （能不能、今天到不到、有没有货、给不给他留着）。
+   （能否补发、多久到账、是否解封、获得多少福利）。
 3. **例外：如果客户消息里附了资料片段，且片段里写明了通用政策**
-   （比如发货时效、退换规则），可以引用一句，例如
-   "我们的发货时效是 24 小时内，您这单我帮您确认下具体进度～"。
+   并且项目、渠道和适用时间都已核实，可以引用一句；资料范围不明确时只表达正在核实。
    引用时必须**只重复片段里明说的内容**，并且**仍要落到"我帮您确认"**上，
    不许把通用政策说成对这一单的保证。
 4. 一句话，不超过 40 个字，语气自然口语化，像微信聊天。
@@ -227,9 +275,7 @@ async def generate_hold_reply(question: str, chunks: list = None) -> str:
         {"role": "system", "content": get_prompt("hold")},
         {"role": "user", "content": user},
     ]
-    reply = await chat(messages, temperature=TEMPERATURE["hold"],
-                       max_tokens=80)
-    return reply.strip()
+    return await _generate_with_variation(messages, "hold", 80)
 
 
 async def generate_smalltalk_reply(text: str, history: list = None,
@@ -251,6 +297,6 @@ async def generate_smalltalk_reply(text: str, history: list = None,
         msgs.append({"role": "system", "content": hist})
     msgs.append({"role": "user", "content": _sanitize_message(text)})
     reply = await asyncio.wait_for(
-        chat(msgs, temperature=TEMPERATURE["smalltalk"], max_tokens=160),
+        _generate_with_variation(msgs, "smalltalk", 160, history),
         timeout=timeout)
     return (reply or "").strip().strip('"').strip("'")

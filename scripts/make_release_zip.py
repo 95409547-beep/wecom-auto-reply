@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "dist" / "WeComBot"
 # 绝不打进包的东西（万一有人在 dist 里跑过，会留下这些）
-EXCLUDE_DIRS = {"logs", "debug", "data/context", "data/state", "data/pending"}
+EXCLUDE_DIRS = {"logs", "debug", "data/context", "data/state", "data/pending", "data/desktop-cache"}
 EXCLUDE_FILES = {".env"}
 EXCLUDE_SUFFIX = {".pyc"}
 
@@ -33,7 +33,8 @@ def main() -> int:
         if not p.is_file():
             continue
         rel = p.relative_to(SRC).as_posix()
-        if any(rel == d or rel.startswith(d + "/") for d in EXCLUDE_DIRS):
+        source_debug_module = rel.startswith("debug/") and p.suffix == ".py"
+        if not source_debug_module and any(rel == d or rel.startswith(d + "/") for d in EXCLUDE_DIRS):
             continue
         if p.name in EXCLUDE_FILES or p.suffix.lower() in EXCLUDE_SUFFIX:
             continue

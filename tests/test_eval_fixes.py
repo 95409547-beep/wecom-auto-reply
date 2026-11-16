@@ -206,3 +206,47 @@ def test_style_override_is_used():
         assert generator.STYLE_OVERRIDE is None
     finally:
         generator.set_style(old)
+
+
+def test_repeated_customer_reply_is_rephrased(monkeypatch):
+    import asyncio
+    from rag import generator
+
+    prompts = []
+    replies = iter(["在天苍城，商会旁边。", "去天苍城的商会旁边找西域商人。"])
+
+    async def fake_chat(messages, **_options):
+        prompts.append(messages[0]["content"])
+        return next(replies)
+
+    monkeypatch.setattr(generator, "chat", fake_chat)
+    monkeypatch.setattr(generator, "STYLE_OVERRIDE", None)
+    result = asyncio.run(generator.generate_reply(
+        "天仙月西域商人在哪？",
+        ["西域商人在天苍城的商会旁边。"],
+        history=[{"role": "assistant", "text": "在天苍城 商会旁边！"}],
+    ))
+    assert result == "去天苍城的商会旁边找西域商人。"
+    assert len(prompts) == 2
+    assert "与该玩家近期收到的回复重复" in prompts[1]
+    assert "西域商人在天苍城的商会旁边" in prompts[1]
+
+
+def test_wording_retry_cannot_change_explicit_number(monkeypatch):
+    import asyncio
+    from rag import generator
+
+    replies = iter(["界面显示 30 天。", "这个选项保留 90 天。"])
+
+    async def fake_chat(_messages, **_options):
+        return next(replies)
+
+    monkeypatch.setattr(generator, "chat", fake_chat)
+    monkeypatch.setattr(generator, "STYLE_OVERRIDE", None)
+    result = asyncio.run(generator.generate_reply(
+        "免扫码有效几天？", ["此版本界面显示 30 天。"],
+        history=[{"role": "assistant", "text": "界面显示 30 天。"}],
+    ))
+    assert result.endswith("界面显示 30 天。")
+    assert result != "界面显示 30 天。"
+    assert "90" not in result
