@@ -2,6 +2,7 @@
 """Qdrant vector search for retrieving relevant knowledge chunks."""
 
 import logging
+from threading import Lock
 from qdrant_client import QdrantClient
 from qdrant_client.models import ScoredPoint  # type: ignore
 
@@ -9,6 +10,8 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "knowledge_base"
 VECTOR_SIZE = 512  # bge-small-zh-v1.5 embedding dimension
+# Keep retrieval out of the short section that publishes an uploaded revision.
+index_lock = Lock()
 
 
 def active_collection() -> str:
@@ -43,10 +46,11 @@ def search(query_vector: list[float], client: QdrantClient,
     """Search Qdrant for the most relevant knowledge chunks."""
     # A fresh local installation has no collection until the first upload.
     # Treat that as no matching knowledge, so ordinary reply policy still runs.
-    if not client.collection_exists(collection_name):
-        return []
-    return client.query_points(
-        collection_name=collection_name,
-        query=query_vector,
-        limit=top_k,
-    ).points
+    with index_lock:
+        if not client.collection_exists(collection_name):
+            return []
+        return client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=top_k,
+        ).points

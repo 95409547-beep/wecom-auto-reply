@@ -10,6 +10,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import logging
+from uuid import NAMESPACE_URL, uuid5
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
@@ -74,34 +75,43 @@ def embed_and_store(
     `pipeline.upload.delete_source_points` 靠它精确匹配来删掉某个文件的索引，
     改写它会让"重传替换 / 删除这个文件的索引"失效。
     """
-    model = get_model()
+    points = build_points(chunks, source, extra)
     if not collection_name:
         from rag.retriever import active_collection
         collection_name = active_collection()
     ensure_collection(qdrant, collection_name)
-
-    points = []
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip():
-            continue
-        embedding = model.encode(embed_text_for(chunk),
-                                 normalize_embeddings=True).tolist()
-        payload = {
-            "text": chunk, "source": source, "index": i,
-            "chunk_id": chunk_id(chunk),
-        }
-        if extra:
-            payload.update(extra)
-        points.append(PointStruct(
-            id=chunk_id(chunk),
-            vector=embedding,
-            payload=payload,
-        ))
-        if (i + 1) % 50 == 0:
-            logger.info(f"Embedded {i + 1}/{len(chunks)} chunks")
 
     if points:
         qdrant.upsert(collection_name=collection_name, points=points)
         logger.info(f"Stored {len(points)} chunks to Qdrant")
 
     return len(points)
+
+
+def build_points(chunks: list[str], source: str, extra: dict = None, *,
+                 revision: str | None = None) -> list[PointStruct]:
+    """Prepare all vectors without writing to the active knowledge base."""
+    model = get_model()
+    points = []
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        embedding = model.encode(embed_text_for(chunk),
+                                 normalize_embeddings=True).tolist()
+        content_id = chunk_id(chunk)
+        payload = {
+            "text": chunk, "source": source, "index": i,
+            "chunk_id": content_id,
+        }
+        if extra:
+            payload.update(extra)
+        points.append(PointStruct(
+            id=str(uuid5(NAMESPACE_URL, f"{source}\0{revision}\0{content_id}"))
+            if revision is not None else content_id,
+            vector=embedding,
+            payload=payload,
+        ))
+        if (i + 1) % 50 == 0:
+            logger.info(f"Embedded {i + 1}/{len(chunks)} chunks")
+
+    return points

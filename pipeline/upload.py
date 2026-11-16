@@ -1,5 +1,5 @@
 # pipeline/upload.py
-"""上传资料进知识库：解析 → 落源 → 切块 → 嵌入 → 入库。
+"""上传资料进知识库：准备源文件和向量 → 一起发布。
 
 支持 txt / md / csv / Excel(xlsx,xlsm,xls) / Word(docx)。老格式 .doc/.wps
 不读（OLE 二进制，没有可靠的纯 Python 读法），报错提示用户另存为。
@@ -30,7 +30,10 @@ import os
 import re
 import shutil
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Callable, List, Optional, Tuple
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ HERE = Path(__file__).resolve().parent.parent
 # 源目录跟资料库档案走：第一个档案 data/chat_raw/uploaded/（老位置，不搬家），
 # 新建的档案 data/chat_raw/archives/<档案>/。显式赋值可覆盖（测试用）。
 UPLOAD_DIR: Optional[Path] = None
+_IMPORT_LOCK = Lock()
 
 
 def upload_dir() -> Path:
@@ -342,13 +346,18 @@ def save_source(path: os.PathLike) -> Path:
     d = upload_dir()
     d.mkdir(parents=True, exist_ok=True)
     p = Path(path)
-    dest = d / p.name
-    n = 1
-    while dest.exists():
-        dest = d / f"{p.stem}_{n}{p.suffix}"
-        n += 1
+    dest = _available_source_path(d / p.name)
     shutil.copy2(p, dest)
     return dest
+
+
+def _available_source_path(dest: Path) -> Path:
+    candidate = dest
+    n = 1
+    while candidate.exists():
+        candidate = dest.with_name(f"{dest.stem}_{n}{dest.suffix}")
+        n += 1
+    return candidate
 
 
 def backup_dir() -> Path:
@@ -356,31 +365,20 @@ def backup_dir() -> Path:
     return upload_dir() / ".old"
 
 
-def replace_source(path: os.PathLike) -> Tuple[Path, Optional[Path]]:
-    """留源，并处理"同一个文件重传"。返回 ``(新源, 被顶掉的旧源或 None)``。
-
-    **为什么必须处理重传**：老板改了价目表再传一次，如果只往后加，库里就同时有
-    新旧两份价格，检索可能命中旧的 —— 机器人报错价，比不回答严重得多。
-    所以同名源＝替换：旧源挪到 ``.old/``，旧向量由调用方删掉。
-    """
-    d = upload_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    p = Path(path)
-    dest = d / p.name
-    old = dest if dest.exists() else None
-    if old is not None:
-        b = backup_dir()
-        b.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        try:
-            old.replace(b / f"{p.stem}_{stamp}{p.suffix}")
-        except OSError as e:                      # 挪不动就直接覆盖，别让上传失败
-            logger.warning(f"旧源备份失败（{old}）: {e}")
-    shutil.copy2(p, dest)
-    return dest, old
+def replace_source(staged: Path, dest: Path) -> Optional[Path]:
+    """备份旧文件，再用同一卷上的暂存文件原子替换。"""
+    backup = None
+    if dest.exists():
+        directory = dest.parent / ".old"
+        directory.mkdir(exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup = directory / f"{dest.stem}_{stamp}{dest.suffix}"
+        shutil.copy2(dest, backup)
+    staged.replace(dest)
+    return backup
 
 
-def already_home(p: Path) -> bool:
+def already_home(p: Path, directory: Optional[Path] = None) -> bool:
     """这个文件本来就在源目录里吗（重建索引走的就是这条路）。
 
     重建时**绝不能**再复制一遍、更不能当"重传"把源挪进 ``.old/`` ——
@@ -391,7 +389,7 @@ def already_home(p: Path) -> bool:
     except OSError:
         return False
     raw = (HERE / "data" / "chat_raw").resolve()
-    return rp.parent in (upload_dir().resolve(), raw)
+    return rp.parent in ((directory or upload_dir()).resolve(), raw)
 
 
 def list_uploaded() -> List[dict]:
@@ -413,15 +411,19 @@ def list_uploaded() -> List[dict]:
 
 # ── 删旧向量 ──────────────────────────────────────────────────────────
 
+def _source_filter(source: str):
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+    return Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+
+
 def delete_source_points(qdrant, collection: str, source: str) -> int:
     """删掉某个源产生的向量，返回删掉的条数；失败返回 ``-1``。
 
     按 ``payload.source`` 删 —— 这也是 embedder 写 payload 时带上 source 的用处。
     """
     try:
-        from qdrant_client.models import (FieldCondition, Filter, FilterSelector,
-                                          MatchValue)
-        flt = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+        from qdrant_client.models import FilterSelector
+        flt = _source_filter(source)
         n = qdrant.count(collection_name=collection, count_filter=flt, exact=True).count
         qdrant.delete(collection_name=collection,
                       points_selector=FilterSelector(filter=flt), wait=True)
@@ -431,6 +433,68 @@ def delete_source_points(qdrant, collection: str, source: str) -> int:
         return -1
 
 
+def _read_source_points(qdrant, collection: str, source: str) -> list:
+    """Snapshot legacy and current points so a partial delete can be undone."""
+    from qdrant_client.models import PointStruct
+
+    offset = None
+    points = []
+    source_filter = _source_filter(source)
+    while True:
+        batch, offset = qdrant.scroll(
+            collection_name=collection, scroll_filter=source_filter,
+            with_payload=True, with_vectors=True, limit=256, offset=offset)
+        points.extend(PointStruct(id=row.id, payload=row.payload, vector=row.vector)
+                      for row in batch)
+        if offset is None:
+            return points
+
+
+def _commit_upload(staged: Path, dest: Path, points: list, qdrant,
+                   collection: str) -> tuple[bool, int]:
+    """Publish the prepared revision and compensate if any write fails."""
+    from rag.retriever import ensure_collection, index_lock
+
+    with index_lock:
+        ensure_collection(qdrant, collection)
+        previous = _read_source_points(qdrant, collection, dest.name) if dest.exists() else []
+        new_ids = [point.id for point in points]
+        file_replaced = delete_started = False
+        backup = None
+        try:
+            qdrant.upsert(collection_name=collection, points=points, wait=True)
+            backup = replace_source(staged, dest)
+            file_replaced = True
+            if previous:
+                delete_started = True
+                qdrant.delete(collection_name=collection,
+                              points_selector=[point.id for point in previous], wait=True)
+        except Exception as error:
+            rollback_errors = []
+            if delete_started:
+                try:
+                    qdrant.upsert(collection_name=collection, points=previous, wait=True)
+                except Exception as rollback_error:
+                    rollback_errors.append(f"恢复旧索引失败: {rollback_error}")
+            try:
+                qdrant.delete(collection_name=collection, points_selector=new_ids, wait=True)
+            except Exception as rollback_error:
+                rollback_errors.append(f"清理新索引失败: {rollback_error}")
+            if file_replaced:
+                try:
+                    if backup is None:
+                        dest.unlink()
+                    else:
+                        shutil.copy2(backup, staged)
+                        staged.replace(dest)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"恢复旧文件失败: {rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(f"{error}；{'；'.join(rollback_errors)}") from error
+            raise
+        return backup is not None, len(previous)
+
+
 # ── 批量导入 ──────────────────────────────────────────────────────────
 
 def import_files(paths: List[os.PathLike], qdrant, collection: str = None,
@@ -438,11 +502,12 @@ def import_files(paths: List[os.PathLike], qdrant, collection: str = None,
     """批量导入。返回 ``{"ok": [...], "failed": [{file, reason}], "chunks": n}``。
 
     ``progress`` 每步回调一次（界面用来刷状态），**跑在后台线程里**。
-    同名文件重传＝替换（旧源备份、旧向量删除），不会新旧价格并存。
+    同名文件重传先准备完整的新版本，再切换文件与索引。
     """
     from pipeline.chunker import split_text
-    from pipeline.embedder import embed_and_store
+    from pipeline.embedder import build_points, embed_and_store
     collection = collection or active_collection()
+    directory = upload_dir()
 
     def say(msg):
         logger.info(msg)
@@ -454,40 +519,51 @@ def import_files(paths: List[os.PathLike], qdrant, collection: str = None,
 
     ok, failed, total = [], [], 0
     seen_stems = set()
+
+    def prepare(p):
+        text, chunks = parse_records(p)
+        if not text.strip():
+            raise ValueError("文件里没有可读文字")
+        if chunks is None:
+            chunks = [c for c in split_text(text) if c.strip()]
+        if not chunks:
+            raise ValueError("切不出有效内容")
+        say(f"{p.name}: 切出 {len(chunks)} 块，正在嵌入…")
+        return chunks
+
     for path in paths:
         p = Path(path)
         try:
-            text, chunks = parse_records(p)
-            if not text.strip():
-                raise ValueError("文件里没有可读文字")
-            if already_home(p):
-                src, old = p, None          # 重建索引：源就在源目录里，别再复制
-            elif p.stem in seen_stems:
-                # 同一批里两个不同目录的同名文件：不能互相顶掉，加后缀共存
-                src, old = save_source(p), None
+            replaced, removed_points = False, 0
+            if already_home(p, directory):
+                # 重建索引：源就在源目录里，别再复制或备份。
+                src = p
+                n = embed_and_store(prepare(p), qdrant, collection_name=collection,
+                                    source=p.name)
             else:
-                seen_stems.add(p.stem)
-                src, old = replace_source(p)
-
-            replaced = 0
-            if old is not None:
-                replaced = delete_source_points(qdrant, collection, old.name)
-                if replaced < 0:
-                    say(f"{p.name}: 旧版本索引没删干净，建议点「重建索引」")
-                else:
-                    say(f"{p.name}: 换了新版本，旧索引清掉 {replaced} 条")
-
-            if chunks is None:
-                chunks = [c for c in split_text(text) if c.strip()]
-            if not chunks:
-                raise ValueError("切不出有效内容")
-            say(f"{p.name}: 切出 {len(chunks)} 块，正在嵌入…")
-            n = embed_and_store(chunks, qdrant, collection_name=collection,
-                                source=src.name)
+                if not p.is_file():
+                    raise ValueError("文件不存在")
+                with _IMPORT_LOCK:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    src = directory / p.name
+                    if p.stem in seen_stems:
+                        # 同一批里不同目录的同名文件各留一份。
+                        src = _available_source_path(src)
+                    with TemporaryDirectory(prefix=".upload-", dir=directory) as staging_dir:
+                        staged = Path(staging_dir) / p.name
+                        shutil.copy2(p, staged)
+                        chunks = prepare(staged)
+                        points = build_points(chunks, src.name, revision=uuid4().hex)
+                        if not points:
+                            raise ValueError("没有生成有效索引")
+                        replaced, removed_points = _commit_upload(
+                            staged, src, points, qdrant, collection)
+                    seen_stems.add(p.stem)
+                    n = len(points)
             total += n
             ok.append({"file": p.name, "chunks": n, "source": src.name,
-                       "replaced": old.name if old is not None else None,
-                       "removed_points": max(0, replaced)})
+                       "replaced": src.name if replaced else None,
+                       "removed_points": removed_points})
             say(f"{p.name}: 已入库 {n} 块")
         except Exception as e:
             failed.append({"file": p.name, "reason": f"{type(e).__name__}: {e}"})

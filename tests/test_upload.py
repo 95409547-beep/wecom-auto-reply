@@ -1,12 +1,10 @@
 # tests/test_upload.py
 """上传资料进知识库：解析 / 留源 / 行级切块 / 重传替换 / 批量容错。
 
-**不加载嵌入模型**：把 pipeline.embedder 换成桩，只验"解析 + 留源 + 切块 + 分流"。
-真正的嵌入由 test_video_qa 那类隔离测试覆盖。
+嵌入模型用桩，索引用本地 Qdrant，覆盖导入、替换及失败回滚。
 """
 
-import sys
-import types
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,18 +13,23 @@ from pipeline import upload as up
 
 @pytest.fixture
 def fake_embedder(monkeypatch):
-    """桩掉嵌入：记录每次入库的 chunk，返回条数。"""
-    calls = []
-    mod = types.ModuleType("pipeline.embedder")
+    from pipeline import embedder
 
-    def embed_and_store(chunks, qdrant, collection_name="knowledge_base", source="unknown"):
-        calls.append({"chunks": list(chunks), "collection": collection_name,
-                      "source": source, "qdrant": qdrant})
-        return len(chunks)
+    model = SimpleNamespace(encode=lambda *a, **kw: SimpleNamespace(
+        tolist=lambda: [1.0] + [0.0] * 511))
+    monkeypatch.setattr(embedder, "get_model", lambda: model)
+    return model
 
-    mod.embed_and_store = embed_and_store
-    monkeypatch.setitem(sys.modules, "pipeline.embedder", mod)
-    return calls
+
+@pytest.fixture
+def client():
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(":memory:")
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 @pytest.fixture
@@ -149,7 +152,7 @@ def test_save_source_never_overwrites(tmp_path, upload_dir):
     assert b.read_text(encoding="utf-8") == "第二版"
 
 
-def test_source_keeps_original_format(tmp_path, home):
+def test_source_keeps_original_format(tmp_path, home, fake_embedder, client):
     """源必须留**原文件**：存成文本的话，重建索引时表格结构就没了，切块方式跟着变。"""
     openpyxl = pytest.importorskip("openpyxl")
     wb = openpyxl.Workbook()
@@ -159,7 +162,7 @@ def test_source_keeps_original_format(tmp_path, home):
     wb.save(x)
 
     nonlocal_upload = up.UPLOAD_DIR
-    up.replace_source(x)
+    assert up.import_files([x], client)["failed"] == []
     saved = list(nonlocal_upload.iterdir())
     assert [f.name for f in saved] == ["价目表.xlsx"]      # 后缀还在
     # 重新解析能得到同样的分块
@@ -168,13 +171,13 @@ def test_source_keeps_original_format(tmp_path, home):
 
 # ── 重传＝替换（老板改了价目表再传一次） ──────────────────────────────
 
-def test_reimport_replaces_old_source(tmp_path, upload_dir, fake_embedder):
+def test_reimport_replaces_old_source(tmp_path, upload_dir, fake_embedder, client):
     f = tmp_path / "价目表.txt"
     f.write_text("索尼A7M4 日租 120", encoding="utf-8")
-    up.import_files([f], qdrant="Q")
+    up.import_files([f], client)
 
     f.write_text("索尼A7M4 日租 100", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    res = up.import_files([f], client)
 
     assert res["ok"][0]["replaced"] == "价目表.txt"
     srcs = [p for p in upload_dir.iterdir() if p.is_file()]
@@ -183,59 +186,114 @@ def test_reimport_replaces_old_source(tmp_path, upload_dir, fake_embedder):
     assert len(list(up.backup_dir().glob("*.txt"))) == 1   # 旧版留档，没删
 
 
-def test_reimport_deletes_old_points(tmp_path, upload_dir, fake_embedder, monkeypatch):
-    """新旧价格并存 = 机器人可能报旧价，比不回答严重。"""
-    calls = []
-    monkeypatch.setattr(up, "delete_source_points",
-                        lambda q, c, s: calls.append((q, c, s)) or 7)
-    f = tmp_path / "价目表.txt"
-    f.write_text("旧价 120", encoding="utf-8")
-    up.import_files([f], qdrant="Q")
+@pytest.mark.parametrize("fault", ["embedding", "partial_write", "file_replace", "partial_delete"])
+def test_failed_replacement_keeps_old_source_and_search_results(
+        tmp_path, upload_dir, fake_embedder, client, monkeypatch, fault):
+    from pathlib import Path
+    from rag.retriever import search
 
-    f.write_text("新价 100", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    collection = "replacement"
+    path = tmp_path / "价格.csv"
+    original = "器材,日租\n相机,120\n镜头,80\n"
+    path.write_text(original, encoding="utf-8")
+    assert up.import_files([path], client, collection)["failed"] == []
+    query = [1.0] + [0.0] * 511
+    old = {point.id: point.payload for point in search(query, client, collection)}
+    assert len(old) == 2
 
-    assert calls == [("Q", "knowledge_base", "价目表.txt")]
-    assert res["ok"][0]["removed_points"] == 7
+    path.write_text("器材,日租\n相机,100\n镜头,60\n", encoding="utf-8")
+    original_upsert = client.upsert
+    original_delete = client.delete
+    original_replace = Path.replace
+
+    if fault == "embedding":
+        encode = fake_embedder.encode
+        def fail_encoding(text, **kwargs):
+            if "60" in text:
+                raise RuntimeError("failed to embed second row")
+            return encode(text, **kwargs)
+        monkeypatch.setattr(fake_embedder, "encode", fail_encoding)
+    elif fault == "partial_write":
+        def fail_upsert(collection_name, points, **kwargs):
+            original_upsert(collection_name, points[:1], **kwargs)
+            raise RuntimeError("failed to write second vector")
+        monkeypatch.setattr(client, "upsert", fail_upsert)
+    elif fault == "file_replace":
+        def fail_replace(staged, dest):
+            if dest == upload_dir / path.name:
+                raise OSError("destination is locked")
+            return original_replace(staged, dest)
+        monkeypatch.setattr(Path, "replace", fail_replace)
+    else:
+        def fail_delete(collection_name, points_selector, **kwargs):
+            if set(points_selector) == old.keys():
+                original_delete(collection_name, points_selector[:1], **kwargs)
+                raise RuntimeError("failed to remove second old vector")
+            return original_delete(collection_name, points_selector, **kwargs)
+        monkeypatch.setattr(client, "delete", fail_delete)
+
+    result = up.import_files([path], client, collection)
+    assert result["ok"] == []
+    assert [record["file"] for record in result["failed"]] == [path.name]
+    assert (upload_dir / path.name).read_text(encoding="utf-8") == original
+    assert {p.id: p.payload for p in search(query, client, collection)} == old
+    assert client.count(collection).count == len(old)
+    assert list(upload_dir.glob(".upload-*")) == []
 
 
-def test_first_import_deletes_nothing(tmp_path, upload_dir, fake_embedder, monkeypatch):
+def test_replacement_switches_legacy_points_and_preserves_other_sources(
+        tmp_path, upload_dir, fake_embedder, client):
+    from pipeline.embedder import embed_and_store
+
+    collection = "replacement"
+    upload_dir.mkdir()
+    original = "器材,日租\n相机,120\n镜头,80\n"
+    name = "价格.csv"
+    saved = upload_dir / name
+    saved.write_text(original, encoding="utf-8")
+    embed_and_store(up.parse_records(saved)[1], client, collection, source=name)
+
+    other = tmp_path / "另一份价目表.csv"
+    other.write_text(original, encoding="utf-8")
+    assert up.import_files([other], client, collection)["failed"] == []
+    assert client.count(collection).count == 4
+
+    new = tmp_path / name
+    new.write_text("器材,日租\n相机,100\n镜头,80\n", encoding="utf-8")
+    result = up.import_files([new], client, collection)
+    assert result["failed"] == []
+    assert result["ok"][0]["removed_points"] == 2
+    assert saved.read_bytes() == new.read_bytes()
+    assert {row.payload["text"] for row in client.scroll(
+        collection, scroll_filter=up._source_filter(name))[0]} == set(up.parse_records(new)[1])
+    assert {row.payload["text"] for row in client.scroll(
+        collection, scroll_filter=up._source_filter(other.name))[0]} == set(up.parse_records(other)[1])
+    assert client.count(collection).count == 4
+
+
+def test_first_import_deletes_nothing(tmp_path, upload_dir, fake_embedder, client, monkeypatch):
     def boom(*a):
         raise AssertionError("首次上传不该删任何东西")
 
-    monkeypatch.setattr(up, "delete_source_points", boom)
+    monkeypatch.setattr(client, "delete", boom)
     f = tmp_path / "新表.txt"
     f.write_text("灯架 10", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    res = up.import_files([f], client)
     assert res["ok"][0]["replaced"] is None
     assert res["ok"][0]["removed_points"] == 0
 
 
-def test_same_stem_in_one_batch_does_not_clobber(tmp_path, upload_dir, fake_embedder):
+def test_same_stem_in_one_batch_does_not_clobber(tmp_path, upload_dir, fake_embedder, client):
     """两个目录里的同名文件一起选中，不能互相顶掉。"""
     d1, d2 = tmp_path / "甲", tmp_path / "乙"
     d1.mkdir(), d2.mkdir()
     (d1 / "价格.txt").write_text("甲店 120", encoding="utf-8")
     (d2 / "价格.txt").write_text("乙店 100", encoding="utf-8")
 
-    res = up.import_files([d1 / "价格.txt", d2 / "价格.txt"], qdrant="Q")
+    res = up.import_files([d1 / "价格.txt", d2 / "价格.txt"], client)
     assert res["failed"] == []
     assert [o["source"] for o in res["ok"]] == ["价格.txt", "价格_1.txt"]
     assert res["ok"][1]["replaced"] is None
-
-
-def test_delete_failure_warns_but_import_succeeds(tmp_path, upload_dir, fake_embedder,
-                                                  monkeypatch):
-    monkeypatch.setattr(up, "delete_source_points", lambda *a: -1)
-    f = tmp_path / "价目表.txt"
-    f.write_text("旧 120", encoding="utf-8")
-    up.import_files([f], qdrant="Q")
-
-    msgs = []
-    f.write_text("新 100", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q", progress=msgs.append)
-    assert len(res["ok"]) == 1                       # 上传本身没失败
-    assert any("重建索引" in m for m in msgs)          # 但要告诉用户去清干净
 
 
 # ── 重建索引：源已经在家，绝不能再动它 ────────────────────────────────
@@ -249,7 +307,7 @@ def test_already_home_detects_uploaded_and_chat_raw(home):
     assert up.already_home(home / "下载" / "价目表.xlsx") is False
 
 
-def test_rebuild_does_not_touch_sources(home, fake_embedder):
+def test_rebuild_does_not_touch_sources(home, fake_embedder, client):
     """踩过的坑：重建时把源当"重传"挪进 .old/，等于一边重建一边删源。"""
     updir = home / "data" / "chat_raw" / "uploaded"
     updir.mkdir(parents=True)
@@ -258,7 +316,7 @@ def test_rebuild_does_not_touch_sources(home, fake_embedder):
 
     files = up.source_files()
     assert files == [src]
-    res = up.import_files(files, qdrant="Q")
+    res = up.import_files(files, client)
 
     assert res["failed"] == []
     assert res["ok"][0]["replaced"] is None          # 没被当成重传
@@ -298,18 +356,17 @@ def test_source_files_ignores_old_dir(home):
 
 # ── 批量导入容错 ──────────────────────────────────────────────────────
 
-def test_import_ok(tmp_path, upload_dir, fake_embedder):
+def test_import_ok(tmp_path, upload_dir, fake_embedder, client):
     f = tmp_path / "价格.txt"
     f.write_text("索尼 A7M4 日租 120 元。", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    res = up.import_files([f], client)
     assert res["failed"] == []
     assert res["chunks"] == 1
     assert res["ok"][0]["file"] == "价格.txt"
-    assert fake_embedder[0]["qdrant"] == "Q"
-    assert fake_embedder[0]["source"] == "价格.txt"
+    assert client.scroll(up.active_collection())[0][0].payload["source"] == "价格.txt"
 
 
-def test_import_one_bad_file_does_not_kill_others(tmp_path, upload_dir, fake_embedder):
+def test_import_one_bad_file_does_not_kill_others(tmp_path, upload_dir, fake_embedder, client):
     """批量上传最气的是第 3 个文件坏了、结果 1、2 也没进去。"""
     good1 = tmp_path / "1.txt"
     good1.write_text("佳能 R5 押金 5000", encoding="utf-8")
@@ -318,37 +375,37 @@ def test_import_one_bad_file_does_not_kill_others(tmp_path, upload_dir, fake_emb
     good2 = tmp_path / "3.txt"
     good2.write_text("闪光灯 日租 30", encoding="utf-8")
 
-    res = up.import_files([good1, bad, good2], qdrant="Q")
+    res = up.import_files([good1, bad, good2], client)
     assert [o["file"] for o in res["ok"]] == ["1.txt", "3.txt"]
     assert [f["file"] for f in res["failed"]] == ["2.pdf"]
     assert "暂不支持" in res["failed"][0]["reason"]
     assert res["chunks"] == 2
 
 
-def test_import_empty_file_reported_not_crash(tmp_path, upload_dir, fake_embedder):
+def test_import_empty_file_reported_not_crash(tmp_path, upload_dir, fake_embedder, client):
     f = tmp_path / "空.txt"
     f.write_text("   \n\n", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    res = up.import_files([f], client)
     assert res["ok"] == []
     assert "没有可读文字" in res["failed"][0]["reason"]
 
 
-def test_import_missing_file_reported(tmp_path, upload_dir, fake_embedder):
-    res = up.import_files([tmp_path / "无.txt"], qdrant="Q")
+def test_import_missing_file_reported(tmp_path, upload_dir, fake_embedder, client):
+    res = up.import_files([tmp_path / "无.txt"], client)
     assert res["ok"] == []
     assert "不存在" in res["failed"][0]["reason"]
 
 
-def test_import_reports_progress(tmp_path, upload_dir, fake_embedder):
+def test_import_reports_progress(tmp_path, upload_dir, fake_embedder, client):
     f = tmp_path / "p.txt"
     f.write_text("主机 日租 200", encoding="utf-8")
     msgs = []
-    up.import_files([f], qdrant="Q", progress=msgs.append)
+    up.import_files([f], client, progress=msgs.append)
     assert any("嵌入" in m for m in msgs)
     assert any("已入库" in m for m in msgs)
 
 
-def test_import_progress_callback_error_ignored(tmp_path, upload_dir, fake_embedder):
+def test_import_progress_callback_error_ignored(tmp_path, upload_dir, fake_embedder, client):
     """界面回调炸了不能把导入带崩。"""
     f = tmp_path / "p.txt"
     f.write_text("镜头 日租 80", encoding="utf-8")
@@ -356,24 +413,24 @@ def test_import_progress_callback_error_ignored(tmp_path, upload_dir, fake_embed
     def boom(_m):
         raise RuntimeError("界面没了")
 
-    res = up.import_files([f], qdrant="Q", progress=boom)
+    res = up.import_files([f], client, progress=boom)
     assert len(res["ok"]) == 1
 
 
-def test_import_source_name_recorded(tmp_path, upload_dir, fake_embedder):
+def test_import_source_name_recorded(tmp_path, upload_dir, fake_embedder, client):
     """入库 payload 里的 source 是留档文件的名字，重建后还能追溯。"""
     f = tmp_path / "租金表.txt"
     f.write_text("A7M4 120", encoding="utf-8")
-    res = up.import_files([f], qdrant="Q")
+    res = up.import_files([f], client)
     assert res["ok"][0]["source"] == "租金表.txt"
-    assert fake_embedder[0]["source"] == "租金表.txt"
+    assert client.scroll(up.active_collection())[0][0].payload["source"] == "租金表.txt"
 
 
-def test_import_passes_collection(tmp_path, upload_dir, fake_embedder):
+def test_import_passes_collection(tmp_path, upload_dir, fake_embedder, client):
     f = tmp_path / "x.txt"
     f.write_text("灯架 日租 10", encoding="utf-8")
-    up.import_files([f], qdrant="Q", collection="kb2")
-    assert fake_embedder[0]["collection"] == "kb2"
+    up.import_files([f], client, collection="kb2")
+    assert client.count("kb2").count == 1
 
 
 # ── 已上传列表 ────────────────────────────────────────────────────────

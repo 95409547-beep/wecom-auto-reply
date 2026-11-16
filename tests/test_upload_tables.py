@@ -320,27 +320,31 @@ def test_csv_also_guarded(tmp_path, monkeypatch):
 # ── 全链路：xlsx 走一遍导入（嵌入用桩） ──────────────────────────────
 
 def test_xlsx_import_end_to_end(tmp_path, monkeypatch):
-    import sys
-    import types
+    from types import SimpleNamespace
+    from qdrant_client import QdrantClient
+    from pipeline import embedder
 
-    calls = []
-    mod = types.ModuleType("pipeline.embedder")
-    mod.embed_and_store = lambda chunks, qdrant, collection_name="", source="": (
-        calls.append((list(chunks), source)) or len(chunks))
-    monkeypatch.setitem(sys.modules, "pipeline.embedder", mod)
+    model = SimpleNamespace(encode=lambda *a, **kw: SimpleNamespace(
+        tolist=lambda: [1.0] + [0.0] * 511))
+    monkeypatch.setattr(embedder, "get_model", lambda: model)
     monkeypatch.setattr(up, "UPLOAD_DIR", tmp_path / "uploaded")
 
     f = _make_xlsx(tmp_path / "价目表.xlsx", [("价格", [
         ["器材", "日租"], ["索尼A7M4", 120]])])
-    res = up.import_files([f], qdrant="Q")
+    client = QdrantClient(":memory:")
+    try:
+        res = up.import_files([f], client, "tables")
+        chunks = [point.payload["text"] for point in client.scroll("tables")[0]]
+    finally:
+        client.close()
 
     assert res["failed"] == []
     assert res["ok"][0]["source"] == "价目表.xlsx"      # 源留的是原文件，后缀还在
-    assert calls[0][0] == ["索尼A7M4：日租（一天）120"]
+    assert chunks == ["索尼A7M4：日租（一天）120"]
     # 源留了一份，而且是**原始 xlsx 字节**（重建索引靠它，存文本会丢掉表格结构）
     saved = tmp_path / "uploaded" / "价目表.xlsx"
     assert saved.is_file()
-    assert up.parse_records(saved)[1] == calls[0][0]
+    assert up.parse_records(saved)[1] == chunks
 
 
 # ── 界面筛选器 ────────────────────────────────────────────────────────

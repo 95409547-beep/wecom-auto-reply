@@ -151,14 +151,21 @@ def test_summary_counts():
     assert out == {"total": 3, "ok": 2, "bad": 1, "chunks": 2}
 
 
-def test_extra_payload_is_merged_but_source_kept():
+def test_extra_payload_is_merged_but_source_kept(monkeypatch):
     """`extra` 只加字段，**不能动 source** —— 它是文件名，删除/替换索引靠它精确匹配。"""
-    import inspect
-
+    from types import SimpleNamespace
+    from unittest.mock import Mock
     from pipeline import embedder
-    src = inspect.getsource(embedder.embed_and_store)
-    assert '"source": source' in src
-    assert "payload.update(extra)" in src
+
+    model = SimpleNamespace(encode=lambda *a, **kw: SimpleNamespace(
+        tolist=lambda: [1.0] + [0.0] * 511))
+    monkeypatch.setattr(embedder, "get_model", lambda: model)
+    client = Mock()
+    assert embedder.embed_and_store(
+        ["FAQ"], client, "ingest", source="price.xlsx", extra={"origin": "AI整理"}) == 1
+    point, = client.upsert.call_args.kwargs["points"]
+    assert point.payload["source"] == "price.xlsx"
+    assert point.payload["origin"] == "AI整理"
 
 
 def test_gui_dialog_refuses_multiple_files():
