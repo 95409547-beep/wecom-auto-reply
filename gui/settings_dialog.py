@@ -176,17 +176,25 @@ class SettingsDialog:
         current_model = self._cur.get("llm_model", "")
         model = self._field(box, "模型", "llm_model",
                             values=(current_model,) if current_model else (), readonly=True)
+        # The selector takes the remaining space after both actions have been laid out.
+        model.configure(width=1)
         self._entries["llm_model"] = model
         self._fetch_models_btn = ttk.Button(
-            model.master, text="拉取模型", style="Secondary.TButton", command=self._fetch_models)
-        self._fetch_models_btn.pack(side=tk.LEFT, padx=(SPACE["xs"], 0))
+            model.master, text="拉取模型", width=9, style="SegmentOn.TButton",
+            command=self._fetch_models)
+        self._test_llm_btn = ttk.Button(
+            model.master, text="测试连接", width=9, style="Segment.TButton",
+            command=self._test_llm)
+        for button in (self._fetch_models_btn, self._test_llm_btn):
+            button.pack(side=tk.LEFT, padx=(SPACE["sm"], 0))
 
-        hint(box, "填写接口地址和密钥，点击「拉取模型」后从下拉列表选择。").pack(
-            anchor="w", pady=(px(4), 0))
         self._model_status = tk.Label(box, text="", font=font("small"), anchor="w",
                                       justify=tk.LEFT, wraplength=px(450),
                                       background=COLORS["canvas"], foreground=COLORS["ink_mute"])
-        self._model_status.pack(fill=tk.X)
+        self._model_status.pack(fill=tk.X, pady=(SPACE["xs"], SPACE["sm"]))
+        self._llm_busy = False
+        model.bind("<<ComboboxSelected>>", self._on_model_selected)
+        self._on_model_selected()
         self._llm_credentials = {}
         for key in ("llm_base_url", "llm_api_key"):
             value = tk.StringVar(master=self.win, value=self._get(key))
@@ -198,14 +206,6 @@ class SettingsDialog:
         hint(box, f"配置保存在：{env_path}"
                   + ("" if env_path.exists() else "（还没有这个文件，填完点「保存」会生成）")
              ).pack(anchor="w")
-        trow = tk.Frame(box, background=COLORS["canvas"])
-        trow.pack(fill=tk.X, pady=(SPACE["sm"], 0))
-        ttk.Button(trow, text="测试连接", style="Secondary.TButton",
-                   command=self._test_llm).pack(side=tk.LEFT)
-        self._llm_status = tk.Label(trow, text="", font=font("small"),
-                                    background=COLORS["canvas"],
-                                    foreground=COLORS["ink_mute"])
-        self._llm_status.pack(side=tk.LEFT, padx=SPACE["md"])
 
     def _build_channel(self, body):
         """接入通道：内置项 + **自动发现的 profile**（接新软件不用改代码）。"""
@@ -308,9 +308,32 @@ class SettingsDialog:
         model = self._entries["llm_model"]
         model.configure(values=())
         model.set("")
-        self._model_status.config(text="接口设置已更改，请重新拉取模型。",
-                                  foreground=COLORS["ink_mute"])
-        self._llm_status.config(text="")
+        self._on_model_selected()
+
+    def _on_model_selected(self, _event=None):
+        self._sync_model_actions()
+        if not self._llm_busy:
+            detail = ("可以测试所选模型，或直接保存。" if self._get("llm_model") else
+                      "填写接口地址和密钥，拉取后从下拉列表选择模型。")
+            self._model_status.config(text=detail, foreground=COLORS["ink_mute"])
+
+    def _sync_model_actions(self):
+        self._fetch_models_btn.config(state="disabled" if self._llm_busy else "normal")
+        self._test_llm_btn.config(
+            state="disabled" if self._llm_busy or not self._get("llm_model") else "normal")
+        self._entries["llm_model"].configure(
+            state="disabled" if self._llm_busy else "readonly")
+
+    def _run_llm_action(self, fn, progress, apply_result):
+        self._llm_busy = True
+        self._sync_model_actions()
+
+        def finished(ok, result):
+            self._llm_busy = False
+            self._on_model_selected()
+            apply_result(ok, result)
+
+        self._run_async(fn, self._model_status, progress, on_result=finished)
 
     def _fetch_models(self):
         from rag import llm_client
@@ -331,8 +354,6 @@ class SettingsDialog:
                                       foreground=COLORS["danger"])
             return
 
-        self._fetch_models_btn.config(state="disabled")
-
         async def load():
             try:
                 return True, await llm_client.list_models(address, api_key)
@@ -340,7 +361,6 @@ class SettingsDialog:
                 return False, str(exc)
 
         def apply(ok, result):
-            self._fetch_models_btn.config(state="normal")
             if (address, api_key) != (self._get("llm_base_url"), self._get("llm_api_key")):
                 return
             if ok:
@@ -348,13 +368,14 @@ class SettingsDialog:
                 selected = model.get()
                 model.configure(values=result)
                 model.set(selected if selected in result else "")
+                self._sync_model_actions()
                 detail = f"已获取 {len(result)} 个模型，请从下拉列表选择。"
             else:
                 detail = result
             self._model_status.config(text=detail,
                                       foreground=COLORS["success"] if ok else COLORS["danger"])
 
-        self._run_async(load, self._model_status, "正在拉取模型…", on_result=apply)
+        self._run_llm_action(load, "正在拉取模型…", apply)
 
     def _set(self, key, value):
         e = self._entries[key]
@@ -417,13 +438,19 @@ class SettingsDialog:
         threading.Thread(target=work, daemon=True).start()
 
     def _test_llm(self):
-        vals = self._values()
-        if not vals["llm_model"]:
-            self._llm_status.config(text="请先拉取并选择一个模型。", foreground=COLORS["danger"])
-            return
         from rag import llm_client
-        settings = (vals["llm_api_key"], vals["llm_base_url"], vals["llm_model"])
-        self._run_async(partial(llm_client.ping, settings=settings), self._llm_status)
+
+        fields = ("llm_api_key", "llm_base_url", "llm_model")
+        settings = tuple(self._get(field) for field in fields)
+
+        def apply(ok, detail):
+            if settings != tuple(self._get(field) for field in fields):
+                return
+            self._model_status.config(
+                text="连接成功，所选模型可以正常回复。" if ok else detail,
+                foreground=COLORS["success"] if ok else COLORS["danger"])
+
+        self._run_llm_action(partial(llm_client.ping, settings=settings), "正在测试连接…", apply)
 
     def _test_wecom(self):
         vals = self._values()

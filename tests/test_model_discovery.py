@@ -52,8 +52,8 @@ def test_dialog_replaces_stale_model_and_discards_results_for_old_credentials(mo
     results = []
     dialog = SimpleNamespace(
         _get=credentials.__getitem__, _entries={"llm_model": model},
-        _fetch_models_btn=Mock(), _model_status=Mock(),
-        _run_async=lambda fn, _label, _text, *, on_result: results.append((fn, on_result)),
+        _model_status=Mock(), _sync_model_actions=Mock(),
+        _run_llm_action=lambda fn, _progress, on_result: results.append((fn, on_result)),
     )
 
     async def list_models(address, api_key):

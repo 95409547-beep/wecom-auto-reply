@@ -189,11 +189,10 @@ def test_test_llm_passes_draft_without_changing_active_configuration(monkeypatch
         return True, "连接成功"
 
     monkeypatch.setattr(llm_client, "ping", ping)
+    draft = {"llm_api_key": "draft-key", "llm_base_url": "https://draft.invalid/v1",
+             "llm_model": "draft-model"}
     dialog = SimpleNamespace(
-        _values=lambda: {"llm_api_key": "draft-key",
-                         "llm_base_url": "https://draft.invalid/v1",
-                         "llm_model": "draft-model"},
-        _run_async=lambda fn, _label: asyncio.run(fn()), _llm_status=object())
+        _get=draft.__getitem__, _run_llm_action=lambda fn, _progress, _apply: asyncio.run(fn()))
     SettingsDialog._test_llm(dialog)
     assert captured == [("draft-key", "https://draft.invalid/v1", "draft-model")]
     assert llm_client.resolve_config() == active
