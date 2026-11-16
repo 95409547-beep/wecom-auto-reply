@@ -108,11 +108,25 @@
 
 ## 快速开始（源码运行）
 
+### 此 Fork 的本地开发
+
+推荐使用 Python 3.12。首次准备环境可运行 `scripts/setup_local.ps1`：
+它会创建独立环境、安装 CPU 版 PyTorch、补齐依赖并校验本地模型。
+已有安装可直接双击 `启动.bat` 或 `本机启动.bat`，也可以使用桌面快捷方式。
+源码模式下，三个入口均通过 `launch_local.py` 启动，默认等待用户点「开始」。
+启动异常写入 `logs/launcher.log`，原有运行日志仍在 `logs/monitor.log`。
+
+本地 `dev` 分支用于后续开发；`origin` 指向自己的 Fork，`upstream` 保留原作者项目。
+继续保留两位原作者的 MIT 版权声明。`.env`、运行数据、模型和 `runtime/`
+不提交，换电脑后重新准备环境。
+
+### 手动准备环境
+
 ```bash
 # 1. 依赖（Python 3.10~3.12 / Windows）
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-local.txt
 #   想省磁盘：pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # 2. 准备本地嵌入模型（fresh clone 必做，否则启动会报错）

@@ -38,25 +38,10 @@ set HF_HUB_ENABLE_HF_TRANSFER=1
 set KMP_DUPLICATE_LIB_OK=TRUE
 
 rem == 模式一：已打包，存在 启动.exe ==
-if exist "%~dp0启动.exe" (
-    set TCL_LIBRARY=%~dp0_internal\_tcl_data
-    set TK_LIBRARY=%~dp0_internal\_tk_data
-    set PATH=%~dp0_internal;%~dp0;%PATH%
-    echo 正在启动企业微信智能客服，打包模式...
-    echo.
-    "%~dp0启动.exe"
-    set RESULT=%ERRORLEVEL%
-    goto checked
-)
+if exist "%~dp0启动.exe" goto packaged
 
 rem == 模式二：源码模式，使用本目录 .venv ==
-if exist "%~dp0.venv\Scripts\python.exe" (
-    echo 正在启动企业微信智能客服，源码模式...
-    echo.
-    "%~dp0.venv\Scripts\python.exe" "%~dp0main.py"
-    set RESULT=%ERRORLEVEL%
-    goto checked
-)
+if exist "%~dp0.venv\Scripts\python.exe" goto source
 
 echo [错误] 没有找到可执行的程序。
 echo.
@@ -68,6 +53,22 @@ echo.
 pause
 exit /b 1
 
+:packaged
+set "TCL_LIBRARY=%~dp0_internal\_tcl_data"
+set "TK_LIBRARY=%~dp0_internal\_tk_data"
+set "PATH=%~dp0_internal;%~dp0;%PATH%"
+echo 正在启动企业微信智能客服，打包模式...
+echo.
+"%~dp0启动.exe"
+set "RESULT=%ERRORLEVEL%"
+goto checked
+
+:source
+echo 正在启动企业微信智能客服，源码模式...
+echo.
+"%~dp0.venv\Scripts\python.exe" "%~dp0launch_local.py"
+set "RESULT=%ERRORLEVEL%"
+
 :checked
 if not "%RESULT%"=="0" (
     echo.
@@ -75,3 +76,4 @@ if not "%RESULT%"=="0" (
     echo 请检查 logs\monitor.log 了解详情。
     pause
 )
+exit /b %RESULT%

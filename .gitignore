@@ -18,6 +18,8 @@ dist/
 
 # ── 虚拟环境 ─────────────────────────────────────────────────────
 .venv/
+runtime/
+requirements-installed.txt
 venv/
 env/
 

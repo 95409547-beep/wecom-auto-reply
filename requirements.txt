@@ -32,6 +32,7 @@ python-dotenv==1.0.1
 # ── Windows 桌面自动化（截图 / 键鼠 / 窗口）────────────────────────
 pywin32==312
 pynput==1.8.2
+pyautogui==0.9.54
 mss==10.2.0
 psutil==7.2.2
 
