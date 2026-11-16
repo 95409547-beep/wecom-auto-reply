@@ -171,9 +171,32 @@ def test_run_async_reports_exception_instead_of_crashing():
     assert "RuntimeError" in label.text
 
 
-def test_test_llm_wires_ping():
-    src = (ROOT / "gui" / "settings_dialog.py").read_text(encoding="utf-8")
-    assert "self._run_async(llm_client.ping" in src
+def test_test_llm_passes_draft_without_changing_active_configuration(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from gui.settings_dialog import SettingsDialog
+    from rag import llm_client
+
+    monkeypatch.setenv("LLM_API_KEY", "active-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://active.invalid/v1")
+    monkeypatch.setenv("LLM_MODEL", "active-model")
+    active = llm_client.resolve_config()
+    captured = []
+
+    async def ping(*, settings):
+        captured.append(settings)
+        return True, "连接成功"
+
+    monkeypatch.setattr(llm_client, "ping", ping)
+    dialog = SimpleNamespace(
+        _values=lambda: {"llm_api_key": "draft-key",
+                         "llm_base_url": "https://draft.invalid/v1",
+                         "llm_model": "draft-model"},
+        _run_async=lambda fn, _label: asyncio.run(fn()), _llm_status=object())
+    SettingsDialog._test_llm(dialog)
+    assert captured == [("draft-key", "https://draft.invalid/v1", "draft-model")]
+    assert llm_client.resolve_config() == active
 
 
 def test_run_async_detects_awaitable():

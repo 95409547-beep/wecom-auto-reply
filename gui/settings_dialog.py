@@ -3,8 +3,7 @@
 
 设计要点：
 * 头部「设置」按钮**常驻**，任何时候都能点开重配，不受运行状态影响。
-* LLM 接口：预设下拉 + 地址 + **模型名** + 密钥 + 「测试连接」。
-  模型名必须可编辑 —— 各家模型名不一样，写死 deepseek-chat 换个地址就 400。
+* LLM 接口：地址 + 密钥 + 拉取模型列表 + 选择模型 + 测试连接。
 * 接入通道：**表里只有内置推荐项，不是"只支持这三种"**。profiles/ 目录里
   任何 JSON 都会被自动发现并出现在这里（config.settings_store.discover_profiles）；
   接新软件不用改代码，跑一次 scripts/calibrate_chat_app.py 生成 profile 即可。
@@ -29,13 +28,15 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from functools import partial
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from config import settings_store as store
 from gui.theme import (COLORS, SPACE, apply_theme, dialog_geometry, font, hint,
                        px, scroll_area)
-from rag.llm_client import PRESETS
+from rag.llm_client import DEFAULT_BASE_URL, DEFAULT_MODEL, PRESETS
 
 logger = logging.getLogger(__name__)
 
@@ -158,17 +159,40 @@ class SettingsDialog:
             if base and base.rstrip("/") == cur_base:
                 picked = pname
                 break
-        self._preset.set(picked or (PRESETS[0][0] if PRESETS else ""))
+        self._preset.set(picked or PRESETS[-1][0])
 
         self._entries = {}
         for key, label, show in (("llm_base_url", "接口地址", None),
-                                 ("llm_model", "模型名", None),
                                  ("llm_api_key", "密钥", "•")):
             self._entries[key] = self._field(box, label, key, show=show)
 
-        hint(box, "地址填到 /v1 为止，不要带 /chat/completions；"
-                  "模型名按服务商填（deepseek-chat / qwen-plus / moonshot-v1-8k…）").pack(
+        # Show the effective legacy defaults for an existing connection.
+        if self._get("llm_api_key"):
+            if not cur_base:
+                self._set("llm_base_url", DEFAULT_BASE_URL)
+                self._preset.set(PRESETS[0][0])
+            self._cur["llm_model"] = self._cur.get("llm_model") or DEFAULT_MODEL
+
+        current_model = self._cur.get("llm_model", "")
+        model = self._field(box, "模型", "llm_model",
+                            values=(current_model,) if current_model else (), readonly=True)
+        self._entries["llm_model"] = model
+        self._fetch_models_btn = ttk.Button(
+            model.master, text="拉取模型", style="Secondary.TButton", command=self._fetch_models)
+        self._fetch_models_btn.pack(side=tk.LEFT, padx=(SPACE["xs"], 0))
+
+        hint(box, "填写接口地址和密钥，点击「拉取模型」后从下拉列表选择。").pack(
             anchor="w", pady=(px(4), 0))
+        self._model_status = tk.Label(box, text="", font=font("small"), anchor="w",
+                                      justify=tk.LEFT, wraplength=px(450),
+                                      background=COLORS["canvas"], foreground=COLORS["ink_mute"])
+        self._model_status.pack(fill=tk.X)
+        self._llm_credentials = {}
+        for key in ("llm_base_url", "llm_api_key"):
+            value = tk.StringVar(master=self.win, value=self._get(key))
+            self._llm_credentials[key] = value
+            self._entries[key].configure(textvariable=value)
+            value.trace_add("write", self._invalidate_models)
         # 密钥到底从哪读的 —— 用户问过"我这密钥是哪来的"，直接把文件路径摆出来
         env_path = store.ENV_PATH
         hint(box, f"配置保存在：{env_path}"
@@ -273,12 +297,64 @@ class SettingsDialog:
 
     def _on_preset(self, _evt=None):
         name = self._preset.get()
-        for pname, base, model in PRESETS:
+        for pname, base, _model in PRESETS:
             if pname == name:
-                if base:   # "自定义" 的 base 为空，不动用户已填的内容
+                if base and base.rstrip("/") != self._get("llm_base_url").rstrip("/"):
                     self._set("llm_base_url", base)
-                    self._set("llm_model", model)
+                    self._set("llm_api_key", "")
                 return
+
+    def _invalidate_models(self, *_):
+        model = self._entries["llm_model"]
+        model.configure(values=())
+        model.set("")
+        self._model_status.config(text="接口设置已更改，请重新拉取模型。",
+                                  foreground=COLORS["ink_mute"])
+        self._llm_status.config(text="")
+
+    def _fetch_models(self):
+        from rag import llm_client
+
+        address = self._get("llm_base_url")
+        api_key = self._get("llm_api_key")
+        try:
+            url = urlsplit(address)
+            valid_address = url.scheme in ("http", "https") and bool(url.hostname)
+        except ValueError:
+            valid_address = False
+        if not valid_address:
+            self._model_status.config(text="请填写完整接口地址，例如 https://服务商地址/v1。",
+                                      foreground=COLORS["danger"])
+            return
+        if store.looks_like_placeholder(api_key):
+            self._model_status.config(text="请填写有效的接口密钥。",
+                                      foreground=COLORS["danger"])
+            return
+
+        self._fetch_models_btn.config(state="disabled")
+
+        async def load():
+            try:
+                return True, await llm_client.list_models(address, api_key)
+            except (RuntimeError, ValueError) as exc:
+                return False, str(exc)
+
+        def apply(ok, result):
+            self._fetch_models_btn.config(state="normal")
+            if (address, api_key) != (self._get("llm_base_url"), self._get("llm_api_key")):
+                return
+            if ok:
+                model = self._entries["llm_model"]
+                selected = model.get()
+                model.configure(values=result)
+                model.set(selected if selected in result else "")
+                detail = f"已获取 {len(result)} 个模型，请从下拉列表选择。"
+            else:
+                detail = result
+            self._model_status.config(text=detail,
+                                      foreground=COLORS["success"] if ok else COLORS["danger"])
+
+        self._run_async(load, self._model_status, "正在拉取模型…", on_result=apply)
 
     def _set(self, key, value):
         e = self._entries[key]
@@ -305,7 +381,7 @@ class SettingsDialog:
 
     # ── 测试连接（后台线程，别卡界面）────────────────────────────────
 
-    def _run_async(self, fn, label: tk.Label, done_text="测试中…"):
+    def _run_async(self, fn, label: tk.Label, done_text="测试中…", *, on_result=None):
         """后台跑一个测试函数，把 (ok, 说明) 填到 label 上。
 
         ★ `fn` 可能是**协程函数**（`llm_client.ping` 就是 async），直接 `fn()`
@@ -327,8 +403,11 @@ class SettingsDialog:
 
             def apply():
                 try:
+                    if on_result is not None:
+                        on_result(ok, detail)
+                        return
                     label.config(text=("✓ " if ok else "✗ ") + detail, foreground=color)
-                except Exception:
+                except tk.TclError:
                     pass
             try:
                 label.after(0, apply)
@@ -339,13 +418,12 @@ class SettingsDialog:
 
     def _test_llm(self):
         vals = self._values()
-        # 测试用的是输入框里的值，不是磁盘上的 —— 用户可能还没保存
-        os.environ["LLM_API_KEY"] = vals["llm_api_key"]
-        os.environ["LLM_BASE_URL"] = vals["llm_base_url"]
-        os.environ["LLM_MODEL"] = vals["llm_model"]
+        if not vals["llm_model"]:
+            self._llm_status.config(text="请先拉取并选择一个模型。", foreground=COLORS["danger"])
+            return
         from rag import llm_client
-        llm_client.reset_client()
-        self._run_async(llm_client.ping, self._llm_status)
+        settings = (vals["llm_api_key"], vals["llm_base_url"], vals["llm_model"])
+        self._run_async(partial(llm_client.ping, settings=settings), self._llm_status)
 
     def _test_wecom(self):
         vals = self._values()
@@ -368,6 +446,9 @@ class SettingsDialog:
 
     def _save(self):
         vals = self._values()
+        if vals["llm_api_key"] and not vals["llm_model"]:
+            messagebox.showwarning("请选择模型", "请先拉取模型并从下拉列表选择一个。", parent=self.win)
+            return
         if not vals["llm_api_key"]:
             if not messagebox.askyesno("还没填密钥",
                                        "LLM 接口密钥是空的，程序将无法生成回复。\n"
