@@ -25,7 +25,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from rag import prompt_store as ps
-from gui.theme import COLORS, apply_theme, dialog_geometry, font, px, scale
+from gui.theme import COLORS, SPACE, apply_theme, dialog_geometry, font, px, scale
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +40,13 @@ TABS = [
 
 
 def open_kb(parent: tk.Misc, cfg: dict = None, on_saved=None,
-            qdrant=None, collection: str = None) -> "KbDialog":
-    return KbDialog(parent, cfg, on_saved, qdrant, collection)
+            qdrant=None, collection: str = None, *, embedded=False) -> "KbDialog":
+    return KbDialog(parent, cfg, on_saved, qdrant, collection, embedded=embedded)
 
 
 class KbDialog:
     def __init__(self, parent: tk.Misc, cfg: dict = None, on_saved=None,
-                 qdrant=None, collection: str = None):
+                 qdrant=None, collection: str = None, *, embedded=False):
         self.cfg = cfg or {}
         self.on_saved = on_saved
         # 复用主程序已经打开的 Qdrant 客户端（本地文件模式不能开第二个）
@@ -55,7 +55,12 @@ class KbDialog:
         self._collection_override = collection
         ps.ensure_files()
 
-        self.win = tk.Toplevel(parent)
+        self._embedded = embedded
+        self.win = parent if embedded else tk.Toplevel(parent)
+        self._dialog_parent = self.win.winfo_toplevel()
+        if embedded:
+            self._build()
+            return
         self.win.title("知识库")
         self.win.geometry(dialog_geometry(self.win, 980, 720))
         self.win.transient(parent)
@@ -67,6 +72,13 @@ class KbDialog:
             self.win.grab_set()
         except Exception:
             pass
+
+    def on_show(self):
+        """Refresh lists without replacing a prompt being edited."""
+        from rag import learn_store
+        self._kb_load(self._kb_page)
+        self._learn_on.set(learn_store.enabled(self.cfg))
+        self._learn_load()
 
     @property
     def collection(self) -> str:
@@ -81,19 +93,18 @@ class KbDialog:
     def _build(self):
         # 底部先建：提示词页初始化时要用到 self._status
         bottom = ttk.Frame(self.win)
-        bottom.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=10)
+        bottom.pack(fill=tk.X, side=tk.BOTTOM, padx=SPACE["lg"], pady=SPACE["sm"])
         self._status = ttk.Label(bottom, text="", foreground=COLORS["success"])
         self._status.pack(side=tk.LEFT)
-        ttk.Button(bottom, text="关闭", command=self.win.destroy).pack(side=tk.RIGHT, padx=6)
-        ttk.Button(bottom, text="保存", command=self._save).pack(side=tk.RIGHT)
-        ttk.Button(bottom, text="恢复默认", command=self._reset).pack(side=tk.RIGHT, padx=6)
+        if not self._embedded:
+            ttk.Button(bottom, text="关闭", command=self.win.destroy).pack(side=tk.RIGHT)
 
         # ══ 档案栏（放在标签页**上面**，四页都看得见当前在哪个库）══
         if not self._collection_override:
             self._build_archive_bar()
 
         nb = ttk.Notebook(self.win)
-        nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 0))
+        nb.pack(fill=tk.BOTH, expand=True, padx=SPACE["lg"], pady=(SPACE["sm"], 0))
         self._nb = nb
 
         # ══ 提示词页 ══
@@ -115,6 +126,9 @@ class KbDialog:
         f_learn = ttk.Frame(nb)
         nb.add(f_learn, text="学到的")
         self._build_learn_page(f_learn)
+        if self._embedded:
+            nb.insert(0, f_kb)
+            nb.select(f_kb)
 
     # ── 学到的页 ──────────────────────────────────────────────────────
 
@@ -128,30 +142,26 @@ class KbDialog:
 
         top = ttk.Frame(page)
         top.pack(fill=tk.X, padx=10, pady=(10, 4))
-        self._learn_on = tk.BooleanVar(
-            value=ls.enabled(self.cfg))
+        self._learn_on = tk.BooleanVar(value=ls.enabled(self.cfg))
         ttk.Checkbutton(top, text="自动学习（人工改完发出去就学）",
                         variable=self._learn_on,
                         command=self._toggle_learn).pack(side=tk.LEFT)
         ttk.Button(top, text="刷新", command=self._learn_load).pack(side=tk.LEFT, padx=8)
         ttk.Button(top, text="预览实际注入给 AI 的内容",
                    command=self._learn_preview).pack(side=tk.LEFT)
-        self._learn_info = ttk.Label(top, text="", foreground=COLORS["ink_mute"])
-        self._learn_info.pack(side=tk.LEFT, padx=10)
+        self._learn_info = ttk.Label(page, text="", foreground=COLORS["ink_mute"])
+        self._learn_info.pack(anchor="w", padx=SPACE["md"])
 
-        tip = ("**默认是开着的**（2026-10-06 起）—— 不想要就取消左边那个勾。\n"
-               "学到的**不会自动进资料库**：只自动学「怎么说话」；人工回复里带出的"
-               "**新说法**（价格/时效/政策）会先进上面的「待确认」，点「采纳进资料库」"
-               "才真正生效 —— 不然一次性的「这次给你免押」会变成通用政策。")
+        tip = "语气规则自动生效。人工回复中的价格、时效和政策等说法，需要采纳后才会进入资料库。"
         ttk.Label(page, text=tip, foreground=COLORS["warning"],
-                  wraplength=780, justify="left").pack(anchor="w", padx=12)
+                  wraplength=px(640), justify="left").pack(anchor="w", padx=SPACE["md"])
 
         # 待确认的新知识（最重要，放最上面）
         f_facts = ttk.LabelFrame(
             page, text="待确认的说法（改稿学到的，或你在待人工页直接发送确认过的）")
         f_facts.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 4))
         cols = ("claim", "question", "src", "when")
-        self._fact_tree = ttk.Treeview(f_facts, columns=cols, show="headings", height=6)
+        self._fact_tree = ttk.Treeview(f_facts, columns=cols, show="headings", height=4)
         for c, t, w in (("claim", "回答 / 新说法", 380),
                         ("question", "客户问的是", 210),
                         ("src", "来源", 80), ("when", "时间", 120)):
@@ -162,7 +172,7 @@ class KbDialog:
         self._fact_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=6)
         sb.pack(side=tk.LEFT, fill=tk.Y, pady=6, padx=(0, 6))
         f_btns = ttk.Frame(f_facts)
-        f_btns.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
+        f_btns.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6, before=self._fact_tree)
         ttk.Button(f_btns, text="采纳进资料库",
                    command=self._fact_accept).pack(fill=tk.X, pady=2)
         ttk.Button(f_btns, text="丢弃", command=self._fact_reject).pack(fill=tk.X, pady=2)
@@ -171,7 +181,7 @@ class KbDialog:
         f_tone = ttk.LabelFrame(page, text="已学到的语气（自动生效，可删）")
         f_tone.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         cols2 = ("kind", "text", "hits")
-        self._learn_tree = ttk.Treeview(f_tone, columns=cols2, show="headings", height=8)
+        self._learn_tree = ttk.Treeview(f_tone, columns=cols2, show="headings", height=4)
         for c, t, w in (("kind", "类型", 70), ("text", "内容", 660), ("hits", "学了几次", 70)):
             self._learn_tree.heading(c, text=t)
             self._learn_tree.column(c, width=w, anchor="w")
@@ -180,7 +190,7 @@ class KbDialog:
         self._learn_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=6)
         sb2.pack(side=tk.LEFT, fill=tk.Y, pady=6, padx=(0, 6))
         f_btns2 = ttk.Frame(f_tone)
-        f_btns2.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
+        f_btns2.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6, before=self._learn_tree)
         ttk.Button(f_btns2, text="这条别学",
                    command=self._learn_block).pack(fill=tk.X, pady=2)
         ttk.Button(f_btns2, text="删掉这条",
@@ -217,10 +227,9 @@ class KbDialog:
         c = ls.counts()
         on = ls.enabled(self.cfg)
         self._learn_info.config(
-            text=(f"学习开关：{'已开启' if on else '未开启（默认是开的，被关掉了）'}"
-                  f"｜语气规则 {c['rules']} 条｜口吻样本 {c['tones']} 条｜"
-                  f"待确认 {c['pending_facts']} 条｜别学 {c['blocked']} 条｜"
-                  f"采纳过 {c['accepts']} 个问题"),
+            text=(f"语气规则 {c['rules']} · 口吻样本 {c['tones']} · "
+                  f"待确认 {c['pending_facts']} · 已屏蔽 {c['blocked']} · "
+                  f"已采纳 {c['accepts']}"),
             foreground=COLORS["success"] if on else COLORS["warning"])
 
     # ── 学到的页：动作 ────────────────────────────────────────────────
@@ -246,7 +255,7 @@ class KbDialog:
         w = tk.Toplevel(self.win)
         w.title("实际注入给 AI 的内容")
         w.geometry("760x520")
-        w.transient(self.win)
+        w.transient(self._dialog_parent)
         t = tk.Text(w, wrap="word", font=font("small"))
         t.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         t.insert("1.0", block or "（现在什么都没注入 —— 要么还没学到，要么学习关着）")
@@ -337,8 +346,8 @@ class KbDialog:
     def _build_archive_bar(self):
         from rag import archives
 
-        bar = ttk.LabelFrame(self.win, text="资料库档案（每个档案互不影响，切了立刻生效）")
-        bar.pack(fill=tk.X, padx=10, pady=(10, 0))
+        bar = ttk.LabelFrame(self.win, text="资料库档案")
+        bar.pack(fill=tk.X, padx=SPACE["lg"], pady=(SPACE["md"], 0))
         row = ttk.Frame(bar)
         row.pack(fill=tk.X, padx=8, pady=6)
 
@@ -363,8 +372,9 @@ class KbDialog:
     def _arch_tip(self):
         from rag import archives
         n = len(self._archives)
-        self._arch_info.config(text=f"共 {n} 个档案｜当前：{archives.active_name()}")
-        self.win.title(f"知识库 —— {archives.active_name()}")
+        self._arch_info.config(text=f"{n} 个独立档案 · 切换后立即生效")
+        if not self._embedded:
+            self.win.title(f"知识库 —— {archives.active_name()}")
 
     def _archive_index(self) -> int:
         return max(0, self._arch_combo.current())
@@ -413,7 +423,7 @@ class KbDialog:
         from rag import archives
         name = simpledialog.askstring("新建资料库档案",
                                       "给这个资料库起个名字（比如「服装租赁」）：",
-                                      parent=self.win)
+                                      parent=self._dialog_parent)
         if not name:
             return
         src = archives.active_id()
@@ -436,7 +446,7 @@ class KbDialog:
         from rag import archives
         a = self._archives[self._archive_index()]
         name = simpledialog.askstring("重命名", "新的名字：", initialvalue=a.get("name", ""),
-                                      parent=self.win)
+                                      parent=self._dialog_parent)
         if not name:
             return
         archives.rename(a["id"], name)
@@ -449,7 +459,7 @@ class KbDialog:
         from rag import archives, kb_tools
         src = self._archives[self._archive_index()]
         name = simpledialog.askstring(
-            "复制档案", f"把「{src['name']}」整份复制成（填新名字）：", parent=self.win)
+            "复制档案", f"把「{src['name']}」整份复制成（填新名字）：", parent=self._dialog_parent)
         if not name:
             return
         if self.qdrant is None:
@@ -506,42 +516,47 @@ class KbDialog:
         up.pack(fill=tk.X, padx=10, pady=(10, 4))
         r1 = ttk.Frame(up)
         r1.pack(fill=tk.X, padx=8, pady=6)
-        ttk.Button(r1, text="选择文件…", command=self._kb_pick_files).pack(side=tk.LEFT)
+        ttk.Button(r1, text="选择文件…", style="SegmentOn.TButton",
+                   command=self._kb_pick_files).pack(side=tk.LEFT)
         # AI 整理：陈述句/表格 → 问答。整理结果先预览，勾选后才写入。
-        ttk.Button(r1, text="用 AI 整理成问答…",
+        ttk.Button(r1, text="用 AI 整理成问答…", style="Segment.TButton",
                    command=self._kb_ai_ingest).pack(side=tk.LEFT, padx=6)
-        ttk.Button(r1, text="重建索引", command=self._kb_rebuild).pack(side=tk.LEFT)
+        ttk.Button(r1, text="重建索引", style="Ghost.TButton",
+                   command=self._kb_rebuild).pack(side=tk.LEFT)
         self._kb_up_status = ttk.Label(r1, text="", foreground=COLORS["ink_mute"])
         self._kb_up_status.pack(side=tk.LEFT, padx=10)
 
         top = ttk.Frame(page)
         top.pack(fill=tk.X, padx=10, pady=(4, 4))
         ttk.Label(top, text="搜关键词：").pack(side=tk.LEFT)
-        self._kb_kw = ttk.Entry(top, width=24)
+        self._kb_kw = ttk.Entry(top, width=18)
         self._kb_kw.pack(side=tk.LEFT, padx=4)
         self._kb_kw.bind("<Return>", lambda e: self._kb_load(0))
         ttk.Button(top, text="搜索", command=lambda: self._kb_load(0)).pack(side=tk.LEFT)
-        ttk.Button(top, text="刷新", command=lambda: self._kb_load(0)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="刷新", style="Ghost.TButton",
+                   command=lambda: self._kb_load(0)).pack(side=tk.LEFT, padx=4)
         self._kb_page = 0
-        ttk.Button(top, text="← 上一页",
-                   command=lambda: self._kb_load(self._kb_page - 1)).pack(side=tk.LEFT, padx=(12, 2))
         ttk.Button(top, text="下一页 →",
-                   command=lambda: self._kb_load(self._kb_page + 1)).pack(side=tk.LEFT, padx=2)
-        self._kb_info = ttk.Label(top, text="", foreground=COLORS["ink_mute"])
-        self._kb_info.pack(side=tk.LEFT, padx=10)
+                   command=lambda: self._kb_load(self._kb_page + 1)).pack(side=tk.RIGHT)
+        ttk.Button(top, text="← 上一页",
+                   command=lambda: self._kb_load(self._kb_page - 1)).pack(side=tk.RIGHT, padx=4)
+
+        self._kb_info = ttk.Label(page, text="", foreground=COLORS["ink_mute"])
+        self._kb_info.pack(side=tk.BOTTOM, anchor="w", padx=SPACE["md"], pady=SPACE["xs"])
 
         # 单条操作：手动改资料全靠这一排
         ops = ttk.Frame(page)
         ops.pack(fill=tk.X, padx=10, pady=(0, 2))
-        ttk.Button(ops, text="新增一条…", command=self._kb_add).pack(side=tk.LEFT)
+        ttk.Button(ops, text="新增一条…", style="SegmentOn.TButton",
+                   command=self._kb_add).pack(side=tk.LEFT)
         ttk.Button(ops, text="编辑这条…", command=self._kb_edit).pack(side=tk.LEFT, padx=6)
         ttk.Button(ops, text="看全文", command=self._kb_view).pack(side=tk.LEFT, padx=6)
         ttk.Button(ops, text="撤销上次修改", command=self._kb_undo).pack(side=tk.LEFT, padx=6)
-        ttk.Button(ops, text="删除这条", command=self._kb_delete).pack(side=tk.LEFT, padx=6)
+        ttk.Button(ops, text="删除这条", style="Danger.TButton",
+                   command=self._kb_delete).pack(side=tk.LEFT, padx=6)
         # ★ 最常转人工的问题 = 资料库缺什么。放这里顺手就能补。
-        ttk.Button(ops, text="最常转人工的问题…",
-                   command=self._open_unanswered).pack(side=tk.LEFT, padx=(18, 6))
-        ttk.Label(ops, text="（双击一行＝看全文）", foreground=COLORS["ink_mute"]).pack(side=tk.LEFT, padx=8)
+        ttk.Button(ops, text="最常转人工的问题…", style="Ghost.TButton",
+                   command=self._open_unanswered).pack(side=tk.RIGHT)
 
         # 问题和答案**必须分两列**：挤在一列里 Treeview 只显示第一行，
         # 用户看到满屏"客户问题"，会以为答案根本没导进来。
@@ -555,8 +570,10 @@ class KbDialog:
         self._kb_tree.bind("<Double-1>", lambda e: self._kb_view())
         sb = ttk.Scrollbar(page, orient=tk.VERTICAL, command=self._kb_tree.yview)
         self._kb_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y, pady=4, padx=(0, 10))
         self._kb_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=4)
-        sb.pack(side=tk.LEFT, fill=tk.Y, pady=4, padx=(0, 10))
+        self._kb_empty = tk.Label(self._kb_tree, background=COLORS["canvas"],
+                                  foreground=COLORS["ink_mute"], font=font("body"))
         self._kb_load(0)
 
     # ── 单条操作 ──────────────────────────────────────────────────────
@@ -581,7 +598,7 @@ class KbDialog:
         w = tk.Toplevel(self.win)
         w.title("资料全文")
         w.geometry("760x520")
-        w.transient(self.win)
+        w.transient(self._dialog_parent)
         t = tk.Text(w, wrap="word", font=font("small"))
         t.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         t.insert("1.0", e["text"] if not e["faq"]
@@ -598,7 +615,7 @@ class KbDialog:
             messagebox.showerror("改不了", "拿不到资料库连接（主程序没起来？）")
             return
         from gui.kb_edit import open_editor
-        open_editor(self.win, e, self.qdrant, self.collection,
+        open_editor(self._dialog_parent, e, self.qdrant, self.collection,
                     on_saved=self._after_edit, cfg=self.cfg)
 
     def _kb_add(self):
@@ -607,13 +624,13 @@ class KbDialog:
             messagebox.showerror("加不了", "拿不到资料库连接（主程序没起来？）")
             return
         from gui.kb_edit import open_editor
-        open_editor(self.win, None, self.qdrant, self.collection,
+        open_editor(self._dialog_parent, None, self.qdrant, self.collection,
                     on_saved=self._after_add, cfg=self.cfg)
 
     def _open_unanswered(self):
         """最常转人工的问题 = 资料库缺什么。补一条能少转很多次人工。"""
         from gui.unanswered_dialog import open_unanswered
-        open_unanswered(self.win, self.qdrant, self.collection, self.cfg)
+        open_unanswered(self._dialog_parent, self.qdrant, self.collection, self.cfg)
 
     def _after_add(self, res):
         self._kb_load(self._kb_page)
@@ -702,7 +719,7 @@ class KbDialog:
         if not path:
             return
         from gui.llm_ingest_dialog import open_ingest
-        open_ingest(self.win, [path], qdrant=self.qdrant, collection=self.collection,
+        open_ingest(self._dialog_parent, [path], qdrant=self.qdrant, collection=self.collection,
                     on_done=lambda n: (self._kb_load(0),
                                        self._kb_up_status.config(
                                            text="AI 整理写入 %d 条" % n,
@@ -832,6 +849,11 @@ class KbDialog:
             key = self._kb_tree.insert("", tk.END, tags=tag,
                                        values=(page * size + n, q, a))
             self._kb_rows[key] = r
+        if rows:
+            self._kb_empty.place_forget()
+        else:
+            self._kb_empty.config(text="没有匹配的资料" if kw else "还没有资料，可以上传文件或新增问答")
+            self._kb_empty.place(relx=.5, rely=.5, anchor="center")
         if kw:
             self._kb_info.config(
                 text=f"搜索「{kw}」命中 {hit_total} 条（全库搜索）| "
@@ -910,7 +932,11 @@ class KbDialog:
     def _build_prompt_page(self, page):
         top = ttk.Frame(page)
         top.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(top, text="选择要编辑的提示词：").pack(side=tk.LEFT)
+        ttk.Button(top, text="保存提示词", style="Primary.TButton",
+                   command=self._save).pack(side=tk.RIGHT)
+        ttk.Button(top, text="恢复默认", style="Ghost.TButton",
+                   command=self._reset).pack(side=tk.RIGHT, padx=SPACE["sm"])
+        ttk.Label(top, text="提示词类型").pack(side=tk.LEFT)
         self._which = tk.StringVar(value="system")
         self._combo = ttk.Combobox(top, state="readonly", width=14,
                                    values=[f"{label}" for _k, label in TABS])
@@ -920,29 +946,31 @@ class KbDialog:
         self._hint = ttk.Label(top, text="", foreground=COLORS["ink_mute"])
         self._hint.pack(side=tk.LEFT, padx=10)
 
-        tip = ("提示：`{context}`、`{conversation_history}`、`{tone_samples}` 是程序填内容的"
-               "占位符，别改名。写成别的花括号（比如 `{contex}`）保存时会被拦住 —— "
-               "存下去会让机器人变成「全部转人工」。")
+        tip = "请保留程序使用的占位符，例如 {context}、{conversation_history} 和 {tone_samples}。"
         ttk.Label(page, text=tip, foreground=COLORS["warning"],
                   wraplength=600, justify="left").pack(anchor="w", padx=12)
 
         # 编辑区
         box = ttk.Frame(page)
         box.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
-        self._text = tk.Text(box, wrap="word", font=font("small"), undo=True)
+        self._text = tk.Text(box, height=8, wrap="word", font=font("body"), undo=True,
+                             padx=px(10), pady=px(8), background=COLORS["canvas"])
         sb = ttk.Scrollbar(box, orient=tk.VERTICAL, command=self._text.yview)
         self._text.configure(yscrollcommand=sb.set)
         self._text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
         # 受保护区（只读）
-        safe = ttk.LabelFrame(page, text="受保护区（只读 —— 这些规则改了会答错，不参与编辑）")
-        safe.pack(fill=tk.X, padx=10, pady=(0, 10))
-        t = tk.Text(safe, height=7, wrap="word", foreground=COLORS["ink_mute"],
-                    background="#f5f5f5", relief="flat")
+        safe = ttk.LabelFrame(page, text="安全规则（只读）")
+        safe.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=(0, 10), before=box)
+        t = tk.Text(safe, height=4, wrap="word", foreground=COLORS["ink_mute"],
+                    background=COLORS["canvas_soft"], relief="flat", font=font("small"))
         t.insert("1.0", ps.SAFETY_RULES)
         t.configure(state="disabled")
-        t.pack(fill=tk.X, padx=6, pady=6)
+        safe_scroll = ttk.Scrollbar(safe, orient=tk.VERTICAL, command=t.yview)
+        safe_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        t.configure(yscrollcommand=safe_scroll.set)
+        t.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=6)
 
         self._load("system")
 

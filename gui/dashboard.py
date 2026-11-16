@@ -1,5 +1,5 @@
 # gui/dashboard.py
-"""运营看板（独立窗口）—— docs/看板-PRD.md 的实现。
+"""运营数据看板。
 
 给谁看：**店主本人**。所以它不是 BI，而是"日报 + 待办清单"：
 先看今天机器人替我做了什么，再看**我该补哪条资料**（双击就能补），
@@ -77,7 +77,7 @@ class DashboardWindow:
     """看板窗口。用法：``DashboardWindow(parent, qdrant=..., collection=..., cfg=...)``"""
 
     def __init__(self, parent: tk.Misc, *, qdrant=None, collection: str | None = None,
-                 cfg: dict | None = None, on_close=None):
+                 cfg: dict | None = None, on_close=None, embedded=False):
         self.qdrant = qdrant
         self.collection = collection
         self.cfg = cfg or {}
@@ -88,8 +88,15 @@ class DashboardWindow:
         self._demo_on = False          # 是否在看示例数据（见 _enter_demo）
         self._stats: agg.Stats | None = None
 
-        self.win = tk.Toplevel(parent)
+        self._embedded = embedded
+        self._dialog_parent = parent.winfo_toplevel()
+        self.win = parent if embedded else tk.Toplevel(parent)
+        if embedded:
+            self._build()
+            self.refresh()
+            return
         self.win.title("运营看板")
+        self._dialog_parent = self.win
         self.win.configure(background=COLORS["canvas_soft"])
         # ★ 缩放策略：以屏幕 DPI 为基准，再按**窗口宽度**相对设计宽度等比缩放 ——
         #   这样"框会随窗口放大缩小"，而不是写死像素。第一版写死了，于是高 DPI 下
@@ -111,6 +118,13 @@ class DashboardWindow:
         self.win.bind("<Configure>", self._on_window_configure)
 
         self._build()
+        self.refresh()
+
+    def on_show(self):
+        """Refresh data after a page switch while keeping the date range."""
+        if self._range != "custom" and not self._demo_on:
+            self._end = date.today()
+            self._start = self._end - timedelta(days=6 if self._range == "week" else 0)
         self.refresh()
 
     # ── 界面骨架 ───────────────────────────────────────────────────────
@@ -165,10 +179,16 @@ class DashboardWindow:
             scrollregion=self._canvas.bbox("all")))
         self._canvas.bind("<Configure>", lambda e: self._canvas.itemconfigure(
             self._body_id, width=e.width))
-        self.win.bind("<MouseWheel>",
-                      lambda e: self._canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self._dialog_parent.bind("<MouseWheel>", self._on_scroll, add="+")
         self._body = body
         self._build_body()
+
+    def _on_scroll(self, event):
+        if (self.win.winfo_exists() and self.win.winfo_ismapped() and
+                (event.widget is self._canvas or str(event.widget).startswith(f"{self._canvas}.")) and
+                not isinstance(event.widget, (tk.Text, ttk.Treeview))):
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+            return "break"
 
     def _build_body(self):
         """内容区（可重复构建：窗口缩放后字号要跟着变，而 tk 控件不会自动改）。"""
@@ -194,7 +214,6 @@ class DashboardWindow:
         bar.pack(fill="x")
         inner = tk.Frame(bar, background=COLORS["canvas"])
         inner.pack(fill="x", padx=SPACE["lg"], pady=SPACE["md"])
-        self._topbar_inner = inner
 
         # ★ 先 pack 右侧那组（导出/刷新/时间范围）：Tk 的 pack 是**先 pack 的先占空间**，
         #   右侧最后 pack 的话一超宽就被裁掉（上一版「导出 CSV」和日期都是这么没的）
@@ -202,18 +221,19 @@ class DashboardWindow:
                    command=self._export).pack(side="right")
         ttk.Button(inner, text="刷新 ↻", style="Ghost.TButton",
                    command=self.refresh).pack(side="right", padx=(0, SPACE["sm"]))
-        self._range_label = tk.Label(inner, text="", font=font("small"),
-                                     background=COLORS["canvas"],
-                                     foreground=COLORS["ink_mute"])
-        self._range_label.pack(side="right", padx=(0, SPACE["md"]))
-
         tk.Label(inner, text="运营看板", font=font("h1", True),
                  background=COLORS["canvas"], foreground=COLORS["ink"]).pack(side="left")
 
         # 分段控件（今日 / 近 7 天 / 自定义）—— 选中态是靛蓝浅底
         self._seg = {}
-        seg = tk.Frame(inner, background=COLORS["canvas"])
-        seg.pack(side="left", padx=(SPACE["lg"], 0))
+        controls = tk.Frame(bar, background=COLORS["canvas"])
+        controls.pack(fill="x", padx=SPACE["lg"], pady=(0, SPACE["md"]))
+        self._range_label = tk.Label(controls, text="", font=font("small"),
+                                     background=COLORS["canvas"],
+                                     foreground=COLORS["ink_mute"])
+        self._range_label.pack(side="right")
+        seg = tk.Frame(controls, background=COLORS["canvas"])
+        seg.pack(side="left")
         for key, text in (("today", "今日"), ("week", "近 7 天"), ("custom", "自定义")):
             b = ttk.Button(seg, text=text, style="Segment.TButton",
                            command=lambda k=key: self._pick_range(k))
@@ -264,10 +284,11 @@ class DashboardWindow:
         row.pack(fill="x")
         self._kpi_host = row
         self._kpi_cards: list[tk.Frame] = []
-        for _ in range(4):
+        for index in range(4):
             c = card(row)
-            c.pack(side="left", fill="both", expand=True,
-                   padx=(0, SPACE["md"]) if len(self._kpi_cards) < 3 else 0)
+            row.grid_columnconfigure(index, weight=1, uniform="kpis")
+            c.grid(row=0, column=index, sticky="nsew",
+                   padx=(0, SPACE["md"]) if index < 3 else (0, 0))
             self._kpi_cards.append(c)
 
     def _build_trend(self, parent):
@@ -289,11 +310,14 @@ class DashboardWindow:
         # ★ 这两块**不参与纵向拉伸**：否则它们会把下面的"踩刹车"卡片挤出可视区
         #   （第一版就踩了：截图里底部那块直接看不见）
         row.pack(fill="x", pady=(0, SPACE["md"]))
-        row.pack_propagate(False)
+        row.grid_propagate(False)
+        row.grid_columnconfigure(0, weight=1, uniform="insights")
+        row.grid_columnconfigure(1, weight=1, uniform="insights")
+        row.grid_rowconfigure(0, weight=1)
 
         # 左：客户在问什么
         left = card(row)
-        left.pack(side="left", fill="both", expand=True, padx=(0, SPACE["md"]))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["md"]))
         lb = card_body(left)
         section_title(lb, "客户在问什么（Top 10）").pack(
             anchor="w", padx=SPACE["lg"], pady=(SPACE["lg"], SPACE["xs"]))
@@ -317,7 +341,7 @@ class DashboardWindow:
 
         # 右：我该补什么（双击预填）—— 固定宽度，别让左边把"次数/原因"列挤没了
         right = card(row)
-        right.pack(side="left", fill="both")
+        right.grid(row=0, column=1, sticky="nsew")
         rb = card_body(right)
         section_title(rb, "我该补什么（常被转人工的问题）").pack(
             anchor="w", padx=SPACE["lg"], pady=(SPACE["lg"], SPACE["xs"]))
@@ -376,7 +400,7 @@ class DashboardWindow:
             self._end = date.today()
             self._start = self._end - timedelta(days=6)
         else:
-            picked = CalendarPopup(self.win, self._start, self._end).show()
+            picked = CalendarPopup(self._dialog_parent, self._start, self._end).show()
             if not picked:
                 return
             self._range = "custom"
@@ -395,23 +419,6 @@ class DashboardWindow:
                 else f"{self._start.strftime(fmt)} ~ {self._end.strftime(fmt)}")
         self._range_label.configure(text=f"{span}（{days} 天）")
 
-    def _fit_topbar(self):
-        """顶栏放不下时先藏日期标签 —— 趋势图右上角也有时间提示，不会丢信息。
-
-        （写死尺寸那版就是这里出问题：高 DPI 下「近 7 天/自定义」直接被裁掉。）
-        """
-        try:
-            self.win.update_idletasks()
-            avail = self.win.winfo_width() - px(2 * SPACE["lg"]) - px(8)
-            need = self._topbar_inner.winfo_reqwidth()
-            shown = bool(self._range_label.winfo_ismapped())
-        except Exception:
-            return
-        if need > avail and shown:
-            self._range_label.pack_forget()
-        elif need < avail - px(70) and not shown:
-            self._range_label.pack(side="right", padx=(0, SPACE["md"]))
-
     # ── 刷新与绘制 ─────────────────────────────────────────────────────
 
     def refresh(self):
@@ -424,7 +431,6 @@ class DashboardWindow:
         self._render_distribution()
         self._render_unanswered()
         self._render_guards()
-        self._fit_topbar()
 
     def _render_kpis(self):
         st = self._stats
@@ -622,7 +628,9 @@ class DashboardWindow:
                                  parent=self.win)
             return
         from gui.kb_edit import open_editor
-        open_editor(self.win, None, self.qdrant, self.collection,
+        from rag.retriever import active_collection
+        open_editor(self._dialog_parent, None, self.qdrant,
+                    active_collection() if self._embedded else self.collection,
                     on_saved=lambda res, q=question: self._added(q),
                     cfg=self.cfg, prefill={"question": question})
 

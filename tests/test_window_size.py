@@ -1,32 +1,79 @@
-"""窗口尺寸：要够宽装得下内容，而且要**跟着缩放缓动**而不是写死像素。
+"""Exercise the main window's actual page layout at its minimum size."""
+import tkinter as tk
 
-2026-10-04 更新：原来这里是 grep 字面量 `geometry(720x300)` 并断言 >=700。
-改成"最小宽度用 px(760) 表达 + 按内容自适应"之后字面量没了 —— 但意图更强了：
-* 最小宽度 >= 700 设计像素（px(760) 保证）
-* 且不能再写死：高 DPI（125%/150%）下字号会放大，写死宽度会把「知识库/设置」裁掉
-  （打包版实测过）
-"""
+import pytest
 
-from pathlib import Path
-
-SOURCE = Path("gui/main_window.py").read_text(encoding="utf-8")
+from gui.dashboard import DashboardWindow
+from gui.kb_dialog import KbDialog
+from gui.main_window import MainWindow
 
 
-def test_window_min_width_at_least_700():
-    assert "px(760)" in SOURCE or "px(700)" in SOURCE, \
-        "最小宽度要有 700 设计像素以上"
-    assert "px(320)" in SOURCE, "初始高度也要过缩放"
+def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
+    from gui import kb_dialog
+    from rag import archives, learn_store
 
+    try:
+        probe = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"No Tk display: {exc}")
+    probe.destroy()
 
-def test_window_fits_content_instead_of_hardcoding():
-    """窗口有**紧凑上限**，且窄了要能换行重排（而不是把按钮裁掉）。"""
-    assert "_fit_window" in SOURCE
-    block = SOURCE[SOURCE.index("def _fit_window"):]
-    end = block.find("\n    def ", 10)
-    block = block[:end] if end != -1 else block
-    assert "px(820)" in block, "要有紧凑上限（以前按内容无限撑开，会占掉半个屏幕）"
-    assert "screen_w" in block, "还要受屏幕宽度约束"
-    # 窄窗口时按钮换行，而不是被裁
-    assert "_reflow_header" in SOURCE
-    assert "grid_configure" in SOURCE, "换行要用 grid 挪行列（pack 做不到）"
-    assert "minsize" in SOURCE, "要设最小尺寸，否则能拖到布局散架"
+    monkeypatch.setattr(kb_dialog.ps, "ensure_files", lambda: None)
+    monkeypatch.setattr(archives, "all_archives", lambda: [{"id": "default", "name": "测试资料库"}])
+    monkeypatch.setattr(archives, "active_id", lambda: "default")
+    monkeypatch.setattr(learn_store, "enabled", lambda _cfg: True)
+    monkeypatch.setattr(KbDialog, "_learn_load", lambda self: None)
+    monkeypatch.setattr(DashboardWindow, "refresh", lambda self: self._sync_segments())
+    window = MainWindow(
+        on_dashboard=lambda parent: DashboardWindow(parent, embedded=True),
+        on_kb=lambda parent: KbDialog(parent, embedded=True),
+    )
+    root = window.root
+    try:
+        min_width, min_height = root.minsize()
+        root.geometry(f"{min_width}x{min_height}")
+        root.update()
+        assert window._current_page == "工作台"
+        assert set(window._page_frames) == {"工作台"}
+
+        window._navigation["数据"].invoke()
+        root.update()
+        dashboard = window._page_views["数据"]
+        assert dashboard.win.winfo_toplevel() is root
+        dashboard._pick_range("week")
+        assert dashboard._seg["custom"].winfo_viewable()
+
+        window._navigation["知识库"].invoke()
+        root.update()
+        kb = window._page_views["知识库"]
+        assert kb.win.winfo_toplevel() is root
+        assert kb._nb.tab(kb._nb.select(), "text") == "资料库"
+        assert root.title().startswith("企业微信智能客服")
+        assert root.grab_current() is None
+        kb._kb_kw.insert(0, "测试搜索")
+        prompt_page = next(tab for tab in kb._nb.tabs() if kb._nb.tab(tab, "text") == "提示词")
+        kb._nb.select(prompt_page)
+        kb._text.delete("1.0", tk.END)
+        kb._text.insert("1.0", "未保存的提示词")
+
+        window._navigation["数据"].invoke()
+        root.update()
+        assert window._page_views["数据"] is dashboard
+        assert dashboard._range == "week"
+        assert not kb.win.winfo_viewable()
+
+        window._navigation["知识库"].invoke()
+        root.update()
+        assert window._page_views["知识库"] is kb
+        assert kb._kb_kw.get() == "测试搜索"
+        assert kb._text.get("1.0", "end-1c") == "未保存的提示词"
+        assert kb._nb.tab(kb._nb.select(), "text") == "提示词"
+        assert window._footer.winfo_viewable()
+        assert window._settings_btn.winfo_viewable()
+
+        window._navigation["工作台"].invoke()
+        root.update()
+        assert window._pending_frame.winfo_viewable()
+        assert not kb.win.winfo_viewable()
+    finally:
+        root.destroy()

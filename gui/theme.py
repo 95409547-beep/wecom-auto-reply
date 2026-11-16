@@ -232,6 +232,15 @@ def apply_theme(root: tk.Misc, scale_factor: float | None = None) -> ttk.Style:
               background=[("active", c["primary_subtle"])],
               foreground=[("active", c["primary_press"])])
 
+    nav = dict(padding=(px(12), px(8)), borderwidth=0, relief="flat",
+               focusthickness=1, focuscolor=c["primary_soft"])
+    style.configure("Page.TButton", background=c["canvas"], foreground=c["ink_secondary"],
+                    font=font("body"), **nav)
+    style.configure("PageOn.TButton", background=c["primary_subtle"],
+                    foreground=c["primary_deep"], font=font("body", True), **nav)
+    for name in ("Page.TButton", "PageOn.TButton"):
+        style.map(name, background=[("active", c["primary_subtle"])])
+
     # ── 表格 ────────────────────────────────────────────────────────────
     style.configure("Treeview", background=c["canvas"], fieldbackground=c["canvas"],
                     foreground=c["ink"], rowheight=px(24), borderwidth=0,

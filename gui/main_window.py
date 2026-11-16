@@ -186,42 +186,46 @@ class MainWindow:
         build = version_label()
         self.root.title(f"企业微信智能客服 {build}")
         logger.info("运行版本 %s", build)
-        # 先给个大致位置（建控件期间别在屏幕角落闪）
+        self.root.withdraw()
         sw = self.root.winfo_screenwidth()
-        self.root.geometry(f"{px(760)}x{px(320)}+{max(0, sw - px(780))}+{px(10)}")
+        sh = self.root.winfo_screenheight()
         # 置顶由配置决定（默认不置顶）—— 以前这里硬编码 True，想关只能改代码。
         # 底部「窗口置顶」勾选框可以随时切，见 _create_footer / _toggle_topmost。
         self.root.attributes('-topmost', always_on_top_enabled())
         # ★ 最小尺寸：以前没设，用户可以把窗口拖到 600px 以下，
         #   那时横幅、标签页、表格会互相盖住（用户反馈改窗口大小就盖住按钮）
-        self.root.minsize(px(680), px(420))
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # ★ 先把设计系统装上（ttk 样式必须在创建控件之前生效）
         apply_theme(self.root)
+        self.root.minsize(min(px(780), sw - px(32)), min(px(540), sh - px(96)))
         # 窗口被拖动改大小 → 重排头部 + 表格列按比例（防抖，见 _on_root_configure）
         self.root.bind("<Configure>", self._on_root_configure)
         self.root.configure(background=COLORS["canvas_soft"])
 
         # 顶部标题栏
         self._create_header()
+        self._create_navigation()
 
         # 状态横幅：未配置 / 目标软件不在 / 正常，都显示在这里
         self._create_banner()
 
-        # 状态栏
-        self._create_status_bar()
-
-        # 标签页
-        self._create_tabs()
-
-        # 底部按钮
+        # Persistent status at the bottom, with one content view above it.
         self._create_footer()
+        self._page_host = tk.Frame(self.root, background=COLORS["canvas_soft"])
+        self._page_host.pack(fill=tk.BOTH, expand=True)
+        workbench = tk.Frame(self._page_host, background=COLORS["canvas_soft"])
+        self._create_tabs(workbench)
+        workbench.pack(fill=tk.BOTH, expand=True)
+        self._page_frames = {"工作台": workbench}
+        self._page_views = {}
+        self._current_page = "工作台"
 
         # ★ 按内容自适应尺寸：换主题后标题与按钮都变宽了，
         #   在 125%/150% 缩放的屏幕上固定 720px 会把「知识库/设置」裁掉
         #   （打包版实测界面右边被切）。这里量一次控件要求的尺寸再定窗口大小。
         self._fit_window(sw)
+        self.root.deiconify()
 
     def _fit_window(self, screen_w: int):
         """窗口保持**紧凑**：够装内容就够，但不无限撑大；放不下时由头部换行解决。
@@ -232,16 +236,15 @@ class MainWindow:
         """
         try:
             self.root.update_idletasks()
-            need_h = self.root.winfo_reqheight()
             screen_h = self.root.winfo_screenheight()
         except Exception:
             return
         # 紧凑上限：头部会换行（_reflow_header），所以不必为了塞下按钮把窗口撑宽。
-        # 820×520 设计像素 ≈ 标题一行 + 按钮一行 + 表格 4~5 行，够用又不占屏。
-        w = min(px(820), max(px(700), screen_w - px(40)))
-        h = max(px(320), min(need_h + px(8), px(520), screen_h - px(80)))
-        x = max(0, screen_w - w - px(20))
-        self.root.geometry(f"{w}x{h}+{x}+{px(10)}")
+        w = min(px(1040), screen_w - px(32))
+        h = min(px(720), screen_h - px(96))
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 4)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
         # ★ 多次重排：首次（80ms）此时窗口可能还没真正映射，winfo_width() 不可靠；
         #   映射之后（400ms / 1.2s）再用**真实几何**复核一遍 —— 打包版在 150% 缩放
         #   的机器上就是"按请求宽度算能放下、实际放不下"，把「知识库/设置」裁到了屏幕外。
@@ -345,14 +348,10 @@ class MainWindow:
             w = self._list_frame.winfo_width()
         except Exception:
             return
-        if w <= 1:
-            return
-        for cid, ratio, minw in (("time", 0.13, px(64)), ("customer", 0.20, px(90)),
-                                 ("message", 0.43, px(140)), ("action", 0.24, px(90))):
-            try:
+        if w > 1:
+            for cid, ratio, minw in (("time", 0.13, px(64)), ("customer", 0.20, px(90)),
+                                     ("message", 0.43, px(140)), ("action", 0.24, px(90))):
                 self._tree.column(cid, width=max(minw, int(w * ratio)))
-            except Exception:
-                pass
         try:
             pw = self._pending_frame.winfo_width()
             if pw > 1:
@@ -395,29 +394,46 @@ class MainWindow:
             style="Primary.TButton", command=self._toggle_pause)
         self._pause_btn.pack(side=tk.LEFT, padx=(0, SPACE["xs"]))
 
-        # 数据看板：店主最该常点的地方（"机器人替我做了什么 / 我该补什么资料"）
-        self._dash_btn = ttk.Button(btn_frame, text="数据", style="Secondary.TButton",
-                                    command=self._on_dashboard_clicked)
-        self._dash_btn.pack(side=tk.LEFT, padx=SPACE["xs"])
-
-        self._kb_btn = ttk.Button(btn_frame, text="知识库", style="Secondary.TButton",
-                                  command=self._on_kb_clicked)
-        self._kb_btn.pack(side=tk.LEFT, padx=SPACE["xs"])
-
         self._settings_btn = ttk.Button(btn_frame, text="设置", style="Ghost.TButton",
                                         command=self._on_settings_clicked)
         self._settings_btn.pack(side=tk.LEFT, padx=(SPACE["xs"], 0))
 
-        sep = tk.Frame(header, height=1, background=COLORS["hairline"])
-        sep.grid(row=2, column=0, columnspan=2, sticky="ew")
+    def _create_navigation(self):
+        nav = tk.Frame(self.root, background=COLORS["canvas"])
+        nav.pack(fill=tk.X)
+        self._navigation = {}
+        for name in ("工作台", "数据", "知识库"):
+            btn = ttk.Button(nav, text=name, width=9,
+                             style="PageOn.TButton" if name == "工作台" else "Page.TButton",
+                             command=lambda page=name: self._show_page(page))
+            btn.pack(side=tk.LEFT, padx=(SPACE["lg"] if not self._navigation else SPACE["xs"], 0),
+                     pady=(0, SPACE["sm"]))
+            self._navigation[name] = btn
+        tk.Frame(self.root, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
 
-    def _on_dashboard_clicked(self):
-        if self.on_dashboard:
-            self.on_dashboard()
-
-    def _on_kb_clicked(self):
-        if self.on_kb:
-            self.on_kb()
+    def _show_page(self, name):
+        if name == self._current_page:
+            return
+        existing = self._page_views.get(name)
+        if name not in self._page_frames:
+            factory = {"数据": self.on_dashboard, "知识库": self.on_kb}[name]
+            if factory is None:
+                return
+            frame = tk.Frame(self._page_host, background=COLORS["canvas_soft"])
+            view = factory(frame)
+            if view is None:
+                frame.destroy()
+                return
+            self._page_frames[name] = frame
+            self._page_views[name] = view
+        self._page_frames[self._current_page].pack_forget()
+        self._page_frames[name].pack(fill=tk.BOTH, expand=True)
+        self._current_page = name
+        for label, btn in self._navigation.items():
+            btn.configure(style="PageOn.TButton" if label == name else "Page.TButton")
+        if existing is not None:
+            self.root.after_idle(existing.on_show)
+        self.root.after_idle(self._fit_tree_columns)
 
     def _on_settings_clicked(self):
         if self.on_settings:
@@ -449,18 +465,19 @@ class MainWindow:
                 self._banner.pack_forget()
                 return
             self._banner.config(text=text, background=bg, foreground=fg)
-            self._banner.pack(fill=tk.X, padx=SPACE["md"], pady=(0, SPACE["xs"]))
+            self._banner.pack(fill=tk.X, before=self._footer, padx=SPACE["lg"],
+                              pady=(SPACE["sm"], 0))
         except Exception:
             pass
 
-    def _create_status_bar(self):
+    def _create_status_bar(self, parent):
         """创建状态栏"""
-        status_frame = tk.Frame(self.root, background=COLORS["canvas_soft"])
-        status_frame.pack(fill=tk.X, padx=SPACE["md"], pady=(SPACE["xs"], SPACE["xs"]))
+        status_frame = tk.Frame(parent, background=COLORS["canvas"])
+        status_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=SPACE["md"], pady=SPACE["xs"])
 
         self._status_label = tk.Label(
             status_frame, text="状态：运行中" if self._autostart else "状态：未启动",
-            font=font("small", True), background=COLORS["canvas_soft"],
+            font=font("small", True), background=COLORS["canvas"],
             foreground=COLORS["ink_secondary"])
         self._status_label.pack(side=tk.LEFT)
 
@@ -470,20 +487,25 @@ class MainWindow:
 
         self._stats_label = tk.Label(
             status_frame, text="已回复 0　待人工 0", font=font("small"),
-            background=COLORS["canvas_soft"], foreground=COLORS["ink_mute"])
+            background=COLORS["canvas"], foreground=COLORS["ink_mute"])
         self._stats_label.pack(side=tk.LEFT)
         tk.Label(status_frame, text=f"v{APP_VERSION}", font=font("small"),
-                 background=COLORS["canvas_soft"], foreground=COLORS["ink_secondary"]
+                 background=COLORS["canvas"], foreground=COLORS["ink_secondary"]
                  ).pack(side=tk.RIGHT)
 
-    def _create_tabs(self):
+    def _create_tabs(self, parent):
         """创建标签页"""
-        tab_frame = tk.Frame(self.root, background=COLORS["canvas_soft"])
-        tab_frame.pack(fill=tk.BOTH, expand=True, padx=SPACE["md"], pady=SPACE["xs"])
+        tab_frame = tk.Frame(parent, background=COLORS["canvas_soft"])
+        tab_frame.pack(fill=tk.BOTH, expand=True, padx=SPACE["lg"], pady=SPACE["md"])
 
         # 标签栏
         tab_bar = tk.Frame(tab_frame, background=COLORS["canvas_soft"])
-        tab_bar.pack(fill=tk.X)
+        tab_bar.pack(fill=tk.X, pady=(0, SPACE["sm"]))
+
+        ttk.Button(tab_bar, text="清空记录", style="Danger.TButton",
+                   command=self._clear_records).pack(side=tk.RIGHT)
+        ttk.Button(tab_bar, text="导出记录", style="Ghost.TButton",
+                   command=self._export_csv).pack(side=tk.RIGHT, padx=(0, SPACE["sm"]))
 
         self._tab_buttons = {}
         # ★ 2026-10-06 店主："取消全部这一栏，只需要两个格子" ——
@@ -526,6 +548,7 @@ class MainWindow:
         self._tree.configure(yscrollcommand=scrollbar.set)
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._history_empty = self._empty_label(self._tree, "暂无已发送记录")
 
         self.root.after(120, self._fit_tree_columns)
         self._tree.tag_configure("replied", foreground="green")
@@ -556,21 +579,22 @@ class MainWindow:
                                     command=self._pending_tree.yview)
         self._pending_tree.configure(yscrollcommand=p_scrollbar.set)
 
-        self._pending_stats_label = ttk.Label(
-            self._pending_frame, text="共 0 条待人工")
-
         pending_btn_frame = ttk.Frame(self._pending_frame)
-        ttk.Button(pending_btn_frame, text="发送",
-                   command=self._handle_pending_send).pack(side=tk.LEFT, padx=2)
-        ttk.Button(pending_btn_frame, text="编辑",
-                   command=self._handle_pending_edit).pack(side=tk.LEFT, padx=2)
-        ttk.Button(pending_btn_frame, text="忽略",
-                   command=self._handle_pending_ignore).pack(side=tk.LEFT, padx=2)
+        self._pending_stats_label = ttk.Label(
+            pending_btn_frame, text="共 0 条待人工", style="Mute.TLabel")
+        self._pending_stats_label.pack(side=tk.LEFT)
+        ttk.Button(pending_btn_frame, text="发送", style="Primary.TButton",
+                   command=self._handle_pending_send).pack(side=tk.RIGHT)
+        ttk.Button(pending_btn_frame, text="编辑", style="Ghost.TButton",
+                   command=self._handle_pending_edit).pack(side=tk.RIGHT, padx=SPACE["sm"])
+        ttk.Button(pending_btn_frame, text="忽略", style="Ghost.TButton",
+                   command=self._handle_pending_ignore).pack(side=tk.RIGHT)
 
-        self._pending_stats_label.pack(side=tk.BOTTOM, fill=tk.X, pady=3)
-        pending_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=3)
+        pending_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(SPACE["sm"], 0))
         self._pending_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         p_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._pending_empty = self._empty_label(self._pending_tree, "当前没有待人工处理的消息")
+        self._pending_empty.place(relx=.5, rely=.5, anchor="center")
 
         self._pending_frame.pack_forget()  # 先隐藏，下面按当前标签显示
 
@@ -578,23 +602,26 @@ class MainWindow:
         #   否则会出现"高亮在待人工、显示的却是列表"这种自相矛盾的初始状态。
         self._switch_tab(self._current_tab)
 
-    def _create_footer(self):
-        """创建底部按钮"""
-        footer = tk.Frame(self.root, background=COLORS["canvas"])
-        footer.pack(fill=tk.X, padx=SPACE["md"], pady=(0, SPACE["sm"]))
+    @staticmethod
+    def _empty_label(tree, text):
+        return tk.Label(tree, text=text, font=font("body"), background=COLORS["canvas"],
+                        foreground=COLORS["ink_mute"])
 
-        ttk.Button(footer, text="导出记录", style="Ghost.TButton",
-                   command=self._export_csv).pack(side=tk.LEFT)
-        ttk.Button(footer, text="清空", style="Ghost.TButton",
-                   command=self._clear_records).pack(side=tk.LEFT, padx=(SPACE["xs"], 0))
+    def _create_footer(self):
+        """Always show service status and the window pin control."""
+        self._footer = tk.Frame(self.root, background=COLORS["canvas"])
+        self._footer.pack(fill=tk.X, side=tk.BOTTOM)
+        tk.Frame(self._footer, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
 
         # ★ 窗口置顶开关（2026-10-06 店主反馈"软件强制置顶在所有页面前面"）。
         #   原来是硬编码 `attributes('-topmost', True)` —— 想不置顶只能改代码。
         #   现在：默认**不置顶**，这里一键开/关，写回 config.json 重启也记得。
         #   留在底部是因为它在所有标签页都可见（设置页翻起来麻烦）。
         self._topmost_on = tk.BooleanVar(value=always_on_top_enabled())
-        ttk.Checkbutton(footer, text="窗口置顶", variable=self._topmost_on,
-                        command=self._toggle_topmost).pack(side=tk.RIGHT)
+        ttk.Checkbutton(self._footer, text="窗口置顶", variable=self._topmost_on,
+                        command=self._toggle_topmost).pack(side=tk.RIGHT, padx=SPACE["lg"],
+                                                         pady=SPACE["xs"])
+        self._create_status_bar(self._footer)
 
     def _toggle_topmost(self):
         """勾/取消置顶 → 立刻生效 + 写回配置。
@@ -699,6 +726,12 @@ class MainWindow:
             self._tree.delete(item)
 
         filtered = [r for r in self._records if r.action in OUTBOUND_ACTIONS]
+        empty = getattr(self, "_history_empty", None)
+        if empty is not None:
+            if filtered:
+                empty.place_forget()
+            else:
+                empty.place(relx=.5, rely=.5, anchor="center")
 
         for record in reversed(filtered):        # 最新在上
             self._tree.insert(
@@ -865,7 +898,13 @@ class MainWindow:
         people = len(per_person)
         extra = f"（{people} 个客户）" if people and people != n else ""
         self._pending_stats_label.config(
-            text=f"共 {n} 条待人工{extra} | 选中后点【发送】直接发出，或点【编辑】改完再发")
+            text=f"共 {n} 条待人工{extra}")
+        empty = getattr(self, "_pending_empty", None)
+        if empty is not None:
+            if n:
+                empty.place_forget()
+            else:
+                empty.place(relx=.5, rely=.5, anchor="center")
         btn = self._tab_buttons.get("待人工")
         if btn is not None:
             btn.config(text=f"待人工 ({n})" if n else "待人工")

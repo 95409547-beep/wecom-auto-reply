@@ -232,27 +232,27 @@ def _main_impl():
             pass
         window.set_banner(f"设置已保存。{llm_summary}", level="ok")
 
-    def _open_kb():
-        """点「知识库」打开提示词/资料库面板。"""
+    def _open_kb(parent):
+        """在主窗口内载入提示词和资料库。"""
         try:
             from gui.kb_dialog import open_kb
             # 复用主程序已打开的 Qdrant 客户端（本地文件模式不能开第二个）
-            open_kb(window.root, cfg, on_saved=_after_kb_saved,
-                    qdrant=getattr(responder, "qdrant", None))
+            return open_kb(parent, cfg, on_saved=_after_kb_saved,
+                           qdrant=getattr(responder, "qdrant", None), embedded=True)
         except Exception as e:
             log.error(f"打开知识库面板失败: {e}\n{traceback.format_exc()}")
             window.set_banner(f"知识库面板打开失败：{e}", level="error")
 
-    def _open_dashboard():
-        """点「数据」打开运营看板（只读聚合本机日志，不发送、不修改数据）。"""
+    def _open_dashboard(parent):
+        """在主窗口内载入本机运营看板。"""
         try:
             from gui.dashboard import DashboardWindow
             from rag.retriever import active_collection
-            window._dashboard = DashboardWindow(
-                window.root,
+            return DashboardWindow(
+                parent,
                 qdrant=getattr(responder, "qdrant", None),
                 collection=active_collection(),
-                cfg=cfg)
+                cfg=cfg, embedded=True)
         except Exception as e:
             log.error(f"打开看板失败: {e}\n{traceback.format_exc()}")
             window.set_banner(f"看板打开失败：{e}", level="error")

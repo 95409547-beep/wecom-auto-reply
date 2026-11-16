@@ -138,7 +138,7 @@ class SettingsDialog:
         return w
 
     def _build_llm(self, body):
-        box = self._section(body, "1. LLM 接口（生成回复用）")
+        box = self._section(body, "模型接口")
         prow = tk.Frame(box, background=COLORS["canvas"])
         prow.pack(fill=tk.X, pady=px(3))
         tk.Label(prow, text="预设", width=11, anchor="w", font=font("body"),
@@ -203,13 +203,16 @@ class SettingsDialog:
             value.trace_add("write", self._invalidate_models)
         # 密钥到底从哪读的 —— 用户问过"我这密钥是哪来的"，直接把文件路径摆出来
         env_path = store.ENV_PATH
-        hint(box, f"配置保存在：{env_path}"
-                  + ("" if env_path.exists() else "（还没有这个文件，填完点「保存」会生成）")
-             ).pack(anchor="w")
+        location = hint(box, f"配置文件  {env_path}"
+                        + ("" if env_path.exists() else "（保存时创建）"))
+        location.configure(justify="left")
+        location.pack(anchor="w", fill=tk.X)
+        location.bind("<Configure>",
+                      lambda event: location.configure(wraplength=max(px(100), event.width)))
 
     def _build_channel(self, body):
         """接入通道：内置项 + **自动发现的 profile**（接新软件不用改代码）。"""
-        box = self._section(body, "2. 接入通道（接哪个聊天软件）")
+        box = self._section(body, "接入通道")
         self._channel_box = tk.Frame(box, background=COLORS["canvas"])
         self._channel_box.pack(fill=tk.X)
 

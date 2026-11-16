@@ -174,16 +174,11 @@ def test_safety_rules_are_exposed_readonly():
 
 # ── 界面 ──────────────────────────────────────────────────────────────
 
-def test_kb_button_exists_and_wired():
-    w = (ROOT / "gui/main_window.py").read_text(encoding="utf-8")
+def test_kb_and_dashboard_are_wired_into_main_window():
     m = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert 'text="知识库"' in w
-    assert "on_kb" in w
-    # 2026-10-03：MainWindow 构造参数多了 on_dashboard（数据看板），
-    # 所以这里校验"接线还在"，而不是钉死一整行
     assert "on_kb=_open_kb" in m
     assert "on_dashboard=_open_dashboard" in m
-    assert "from gui.kb_dialog import open_kb" in m
+    assert m.count("embedded=True") == 2
 
 
 def test_kb_dialog_has_readonly_safety_block():
