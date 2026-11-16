@@ -470,6 +470,9 @@ class MainWindow:
             status_frame, text="已回复 0　待人工 0", font=font("small"),
             background=COLORS["canvas_soft"], foreground=COLORS["ink_mute"])
         self._stats_label.pack(side=tk.LEFT)
+        tk.Label(status_frame, text=f"v{APP_VERSION}", font=font("small"),
+                 background=COLORS["canvas_soft"], foreground=COLORS["ink_secondary"]
+                 ).pack(side=tk.RIGHT)
 
     def _create_tabs(self):
         """创建标签页"""
@@ -590,8 +593,6 @@ class MainWindow:
         self._topmost_on = tk.BooleanVar(value=always_on_top_enabled())
         ttk.Checkbutton(footer, text="窗口置顶", variable=self._topmost_on,
                         command=self._toggle_topmost).pack(side=tk.RIGHT)
-        ttk.Label(footer, text=f"v{APP_VERSION}").pack(
-            side=tk.RIGHT, padx=(0, SPACE["md"]))
 
     def _toggle_topmost(self):
         """勾/取消置顶 → 立刻生效 + 写回配置。
