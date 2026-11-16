@@ -128,13 +128,15 @@ def is_placeholder(v: str) -> bool:
 
 
 class WeComKFError(Exception):
-    """企业微信返回了非 0 的 errcode。"""
+    """企业微信请求失败。"""
 
-    def __init__(self, errcode: int, errmsg: str, path: str = ""):
+    def __init__(self, errcode: int, errmsg: str, path: str = "", *,
+                 delivery_unknown: bool = False):
         super().__init__(f"[{errcode}] {errmsg} ({path})")
         self.errcode = errcode
         self.errmsg = errmsg
         self.path = path
+        self.delivery_unknown = delivery_unknown
 
 
 @dataclass
@@ -287,11 +289,17 @@ class WeComKFClient:
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
         except Exception as e:
-            raise WeComKFError(-1, f"网络失败: {type(e).__name__}: {e}", path) from e
+            raise WeComKFError(-1, f"网络失败: {type(e).__name__}: {e}", path,
+                               delivery_unknown=True) from e
         try:
             j = json.loads(raw)
         except Exception:
-            raise WeComKFError(-1, f"响应不是 JSON: {raw[:200]!r}", path)
+            raise WeComKFError(-1, f"响应不是 JSON: {raw[:200]!r}", path,
+                               delivery_unknown=True)
+        if path in (PATH_SEND_MSG, PATH_SEND_MSG_ON_EVENT) and (
+                not isinstance(j, dict) or type(j.get("errcode")) is not int):
+            raise WeComKFError(-1, "发送接口未返回有效结果", path,
+                               delivery_unknown=True)
         errcode = int(j.get("errcode", 0))
         if errcode != 0 and raise_on_error:
             raise WeComKFError(errcode, str(j.get("errmsg", "")), path)
@@ -393,15 +401,14 @@ class WeComKFClient:
         return out
 
     def _send(self, path: str, body: dict, retries: int = 3) -> dict:
-        """发送类接口的**重试**：接口偶发失败（-1 系统繁忙 / 45009 频率超限 /
-        网络抖动）时重试，客户才不会白等。参数或权限错了就不重试，重试也没用。"""
+        """只重试接口明确拒绝的临时错误，例如系统繁忙或频率超限。"""
         last: Optional[WeComKFError] = None
         for attempt in range(1, max(1, retries) + 1):
             try:
                 return self._tokened(path, body=body)
             except WeComKFError as e:
                 last = e
-                if e.errcode in NON_RETRYABLE_ERRCODES:
+                if e.delivery_unknown or e.errcode in NON_RETRYABLE_ERRCODES:
                     logger.error(f"发送失败且不该重试（{e.errcode}: {e.errmsg}）")
                     raise
                 if attempt >= retries:

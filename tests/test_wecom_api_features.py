@@ -139,6 +139,23 @@ def test_send_default_retries_is_three(srv, tmp_path):
     assert len(srv.sent_texts()) == 1
 
 
+@pytest.mark.parametrize("welcome", [False, True])
+def test_transport_timeout_does_not_resubmit_message(srv, tmp_path, monkeypatch, welcome):
+    from unittest.mock import Mock
+
+    c = _client(srv, tmp_path)
+    monkeypatch.setattr(c, "token", lambda **kw: "token")
+    opener = Mock()
+    opener.open.side_effect = TimeoutError("response lost")
+    monkeypatch.setattr("urllib.request.build_opener", lambda *a: opener)
+
+    send = c.send_welcome if welcome else c.send_text
+    with pytest.raises(WeComKFError) as exc:
+        send("recipient", "你好", retries=3)
+    assert exc.value.delivery_unknown
+    opener.open.assert_called_once()
+
+
 def test_cursor_advances_only_after_fetch(srv, tmp_path):
     """游标语义：拿到就推进（已知取舍，见 docs）。至少别在失败时推进。"""
     srv.script = [{"external_userid": "wmAAA", "text": "第一条"},

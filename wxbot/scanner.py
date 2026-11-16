@@ -886,13 +886,18 @@ class Scanner:
 
         Uses ctypes for direct clipboard access on Windows (no subprocess).
         """
-        # A failed automatic measurement must abort before clipboard or keys.
-        if not self.click_input_box():
-            raise RuntimeError("无法确认输入框位置，已中止发送")
-        self._set_clipboard(text)
-        time.sleep(0.1)
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.1)
+        from wxbot.delivery import SendNotStarted
+
+        try:
+            # A failed automatic measurement must abort before clipboard or keys.
+            if not self.click_input_box():
+                raise RuntimeError("无法确认输入框位置，已中止发送")
+            self._set_clipboard(text)
+            time.sleep(0.1)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.1)
+        except Exception as e:
+            raise SendNotStarted(str(e)) from e
         pyautogui.press('enter')
 
     @staticmethod

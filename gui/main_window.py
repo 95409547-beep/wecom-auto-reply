@@ -88,6 +88,8 @@ def load_reply_history(path=None, limit: int = 500) -> List["MessageRecord"]:
             row = json.loads(line)
         except Exception:
             continue
+        if "sent" in row and row["sent"] is not True:
+            continue
         sent = (row.get("ai_reply") or "").strip()
         if not sent:
             continue                      # 没发出去的不算"已回复"
@@ -766,6 +768,9 @@ class MainWindow:
         import logging as _log
         if messagebox.askyesno("退出", "确定要退出吗？"):
             self._should_exit = True
+            self._paused = True
+            if self.on_pause:
+                self.on_pause()
             _log.getLogger(__name__).info("_on_close: 用户确认退出")
             self.root.destroy()
         else:
@@ -836,6 +841,10 @@ class MainWindow:
             # 没草稿时要说清**为什么** —— 不然用户看到空白只会以为程序坏了。
             # （AI 答不上来时给的是内部信号"需要人工处理"，不会当草稿递过来）
             draft = (item.ai_reply or "").strip() or "（AI 没给草稿，点【编辑】自己写）"
+            status = getattr(item, "send_status", "pending")
+            label = {"queued": "待发送", "failed": "发送失败·可重试", "unknown": "待核实·勿重复发送"}.get(status)
+            if label:
+                draft = f"【{label}】{draft}"
             who = item.customer_name
             if per_person[item.customer_name] > 1:
                 who = f"{who} [{per_person[item.customer_name]}条]"

@@ -343,11 +343,17 @@ class MessageDetector:
                 return wide
         return unreplied, has_blue, replied
 
+    def extract_latest_outgoing(self, chat_img: Image.Image) -> Optional[Image.Image]:
+        """Crop the newest outgoing bubble for send confirmation."""
+        return self._scan_bubbles(chat_img, bottom_start=_WIDE_SCAN_BOTTOM,
+                                  top_limit=_WIDE_SCAN_TOP, latest_outgoing=True)
+
     def _scan_bubbles(self, chat_img: Image.Image,
-                      bottom_start: float = None, top_limit: float = None):
+                      bottom_start: float = None, top_limit: float = None,
+                      *, latest_outgoing: bool = False):
         w, h = chat_img.size
         if w < 20 or h < 20:
-            return None, False, []
+            return None if latest_outgoing else (None, False, [])
         # 扫描窗口可覆盖：默认只扫视口底部（新消息总在底部），
         # 兜底调用时放宽到接近整个聊天区。
         bs = self._bb_bottom_start if bottom_start is None else bottom_start
@@ -379,8 +385,9 @@ class MessageDetector:
         gray_first = np.where(gray_mask.any(axis=1),
                               gray_mask.argmax(axis=1), w)
 
-        blue_count = ((pb > pr + self._bb_excess_r) & (pb >= pg)
-                      & (pb >= self._bb_min_rgb)).sum(axis=1)
+        blue_mask = ((pb > pr + self._bb_excess_r) & (pb >= pg)
+                     & (pb >= self._bb_min_rgb))
+        blue_count = blue_mask.sum(axis=1)
 
         dark = (pr < 150) & (pg < 150) & (pb < 150)
         text_count = dark[:, :int(w * 0.4)].sum(axis=1)
@@ -438,6 +445,15 @@ class MessageDetector:
                 continue
 
             y -= 1
+
+        if latest_outgoing:
+            for top, bot, is_blue in bubbles:
+                if not is_blue:
+                    continue
+                columns = np.flatnonzero(blue_mask[top:bot + 1].any(axis=0))
+                if columns.size and columns[-1] >= w // 2:
+                    return chat_img.crop((int(columns[0]), top, int(columns[-1]) + 1, bot + 1))
+            return None
 
         # 合并相邻非蓝泡碎片（灰泡被文字行切碎后合并恢复）
         MERGE_GAP = 8

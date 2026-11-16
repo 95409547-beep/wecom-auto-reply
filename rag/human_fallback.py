@@ -82,8 +82,12 @@ class PendingItem:
     key: str = ""             # 唯一标识：人 + 消息指纹（界面按它定位一行）
     person: str = ""          # 归一后的"这个人"（OCR 名字变体都算同一个）
     seq: int = 0              # 递增序号，用来排序
+    send_status: str = "pending"  # pending | queued | failed | unknown
+    send_error: str = ""
 
     def is_expired(self) -> bool:
+        if self.send_status != "pending":
+            return False  # A delivery requiring attention must not silently disappear.
         return (time.time() - self.timestamp) > TTL_SECONDS
 
 
@@ -131,7 +135,7 @@ class PendingQueue:
 
     def __init__(self, persist_path: str = "data/state/pending_queue.json",
                  max_per_customer: int = None):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._items: dict[str, PendingItem] = {}  # keyed by item.key
         self._cleaned_counts: dict[str, int] = {}   # per-person cleanup count
         self._max_per_customer = int(max_per_customer
@@ -159,7 +163,8 @@ class PendingQueue:
     def push(self, customer_name: str, customer_message: str,
              ai_reply: str, confidence: float = 0.0,
              guard_decision: str = "low_risk",
-             key_hint: str = "") -> Optional[PendingItem]:
+             key_hint: str = "", *, send_status: str = "pending",
+             send_error: str = "") -> Optional[PendingItem]:
         """Add or replace the pending item for **this message**.
 
         ``key_hint`` 用来区分"消息文本一样但不是同一条"的情况 ——
@@ -183,8 +188,13 @@ class PendingQueue:
             key=key,
             person=person,
             seq=_next_seq(),
+            send_status=send_status,
+            send_error=send_error,
         )
         with self._lock:
+            existing = self._items.get(key)
+            if existing is not None and existing.send_status != "pending":
+                return existing
             old = self._items.pop(key, None)
             if old is not None:
                 self._cleaned_counts[person] = \
@@ -201,7 +211,10 @@ class PendingQueue:
                            if (it.person or it.customer_name) == person),
                           key=lambda i: (i.seq, i.timestamp))
             while len(mine) > self._max_per_customer:
-                drop = mine.pop(0)
+                drop = next((it for it in mine if it.send_status == "pending"), None)
+                if drop is None:
+                    break
+                mine.remove(drop)
                 self._items.pop(drop.key, None)
                 self._cleaned_counts[person] = \
                     self._cleaned_counts.get(person, 0) + 1
@@ -209,6 +222,29 @@ class PendingQueue:
                             f"丢掉最旧的一条: {drop.customer_message[:30]}")
         self._save()
         return old
+
+    def begin_send(self, key: str, reply_text: str) -> bool:
+        with self._lock:
+            item = self._items.get(key)
+            if item is None or item.send_status == "queued":
+                return False
+            item.ai_reply = reply_text
+            item.send_status = "queued"
+            item.send_error = ""
+            self._save()
+            return True
+
+    def finish_send(self, key: str, confirmed: Optional[bool], reason: str = ""):
+        with self._lock:
+            item = self._items.get(key)
+            if item is None:
+                return
+            if confirmed is True:
+                del self._items[key]
+            else:
+                item.send_status = "unknown" if confirmed is None else "failed"
+                item.send_error = reason or ("发送结果待核实" if confirmed is None else "发送失败，可重试")
+            self._save()
 
     def get_all(self) -> list[PendingItem]:
         """Return active (non-expired) pending items, newest first."""
@@ -286,6 +322,10 @@ class PendingQueue:
             return self._cleaned_counts.get(customer_name, 0)
 
     def _save(self):
+        with self._lock:
+            self._save_locked()
+
+    def _save_locked(self):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -301,13 +341,17 @@ class PendingQueue:
                         "key": item.key,
                         "person": item.person,
                         "seq": item.seq,
+                        "send_status": item.send_status,
+                        "send_error": item.send_error,
                     }
                     for key, item in self._items.items()
                 },
                 "cleaned_counts": self._cleaned_counts,
             }
-            with open(self._path, "w", encoding="utf-8") as f:
+            temporary = self._path.with_suffix(self._path.suffix + ".tmp")
+            with open(temporary, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            temporary.replace(self._path)
         except OSError as e:
             logger.error(f"Failed to save pending queue: {e}")
 
@@ -321,7 +365,8 @@ class PendingQueue:
             loaded = 0
             for stored_key, raw in data.get("items", {}).items():
                 ts = raw.get("timestamp", 0)
-                if now - ts > TTL_SECONDS:
+                send_status = raw.get("send_status", "pending")
+                if now - ts > TTL_SECONDS and send_status == "pending":
                     continue  # skip expired
                 name = raw.get("customer_name", "")
                 text = raw.get("customer_message", "")
@@ -338,6 +383,9 @@ class PendingQueue:
                     key=key,
                     person=raw.get("person") or name,
                     seq=int(raw.get("seq") or 0),
+                    send_status="unknown" if send_status == "queued" else send_status,
+                    send_error=("上次发送未完成，请核实后重试" if send_status == "queued"
+                                else raw.get("send_error", "")),
                 )
                 loaded += 1
             self._cleaned_counts = data.get("cleaned_counts", {})

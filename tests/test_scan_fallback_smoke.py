@@ -120,7 +120,7 @@ def test_scan_fallback_nontext_branch_uses_injected_queues(monkeypatch):
 
     calls = []
     monkeypatch.setattr(main_mod, "_screenshot_nontext",
-                        lambda sq, pq, name, n=1: calls.append((name, n)))
+                        lambda sq, pq, name, n=1, **kw: calls.append((name, n)))
 
     send_queue, pending_queue = object(), object()
     asyncio.run(main_mod._scan_fallback(

@@ -172,7 +172,9 @@ def test_policy_auto_send_queues_reply():
     q, p = queue.Queue(), _Pending()
     out = _run(dispatch_api_message(r, "wmA", "多少钱", q, p, display_name="张三"))
     assert out.action == ACTION_AUTO_SEND
-    assert q.get_nowait() == ("send", "wmA", "日租 95 元")
+    row = q.get_nowait()
+    assert row[:3] == ("send", "wmA", "日租 95 元")
+    assert row[4]["customer_message"] == "多少钱"
     assert not p.items
 
 
@@ -186,7 +188,9 @@ def test_policy_escalate_sends_hold_and_pushes_pending():
     out = _run(dispatch_api_message(r, "wmB", "缺保安吗", q, p,
                                     refresh_pending=lambda: refreshed.append(1)))
     assert out.action == ACTION_ESCALATE
-    assert q.get_nowait() == ("send", "wmB", "帮您问下，稍等。")
+    row = q.get_nowait()
+    assert row[:3] == ("send", "wmB", "帮您问下，稍等。")
+    assert row[4]["customer_message"] == "缺保安吗"
     assert p.items[0][0] == "wmB" and p.items[0][1] == "缺保安吗"
     assert refreshed, "待人工页要刷新"
 

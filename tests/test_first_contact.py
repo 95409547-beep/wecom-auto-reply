@@ -195,23 +195,6 @@ def _main_src():
     return (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
 
 
-def test_body_requeued_for_next_tick():
-    """正文必须放回队列下一轮发 —— 一次 tick 只发一条，别卡界面两倍时间。"""
-    s = _main_src()
-    block = s[s.index("if greet_first_contact(customer_name, cfg, _do_send"):
-              s.index("send_ok = _do_send(customer_name, reply_text)")]
-    assert "send_queue.put(row)" in block
-    assert "root.after(500, _process_send_queue_tick)" in block
-    assert "return" in block
-
-
-def test_greet_before_send_in_tick():
-    s = _main_src()
-    i_greet = s.index("if greet_first_contact(customer_name, cfg, _do_send")
-    i_send = s.index("send_ok = _do_send(customer_name, reply_text)")
-    assert i_greet < i_send
-
-
 def test_api_welcome_marks_greeted():
     """API 模式欢迎过的人，第一次回复时不能再招呼一遍。"""
     s = _main_src()

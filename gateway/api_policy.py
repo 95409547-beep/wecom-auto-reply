@@ -58,7 +58,8 @@ async def dispatch_api_message(responder, external_userid: str, text: str,
         return ApiDispatchOutcome(ACTION_NO_REPLY, reason=result.reason)
 
     if result.success and result.dispatch_level == "auto_send":
-        send_queue.put(("send", external_userid, result.reply_text))
+        send_queue.put(("send", external_userid, result.reply_text, None,
+                        {"customer_message": text, "source": "auto"}))
         return ApiDispatchOutcome(ACTION_AUTO_SEND,
                                   reason=result.guard_reason or "auto_send",
                                   reply_text=result.reply_text)
@@ -67,7 +68,8 @@ async def dispatch_api_message(responder, external_userid: str, text: str,
         # 转人工 = 资料库缺这条 → 记进「最常转人工的问题」排行
         unanswered.record(text, result.reason or result.guard_decision, who)
         if result.hold_text:
-            send_queue.put(("send", external_userid, result.hold_text))
+            send_queue.put(("send", external_userid, result.hold_text, None,
+                            {"customer_message": text, "source": "hold"}))
         pending_queue.push(external_userid, text, result.reply_text,
                            result.retrieval_score,
                            result.guard_decision or result.reason)

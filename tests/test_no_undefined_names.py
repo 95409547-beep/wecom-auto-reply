@@ -144,11 +144,13 @@ def test_checker_actually_walks_nested_functions():
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 seen.append(path + "/" + n.name)
                 walk(n, path + "/" + n.name)
+            else:
+                walk(n, path)
 
     walk(tree)
     depth = [p for p in seen if p.count("/") >= 2]
     assert depth, "main.py 里应当有嵌套函数（否则这道检查没意义）"
-    assert any("_confirm_screenshot_sent" in p for p in depth), seen
+    assert "/_main_impl/_do_send/submit" in depth, seen
 
 
 def test_scan_fallback_receives_every_thing_it_uses():
@@ -170,34 +172,13 @@ def test_scan_fallback_receives_every_thing_it_uses():
 
 
 def test_confirm_screenshot_sent_takes_before_as_argument():
-    """`before` 必须当**参数**传 —— 它和 `_do_send` 是兄弟，抓不到对方的局部变量。
-
-    钉住 2026-10-06 的崩溃：`before=before_unreplied` →
-    `NameError: name 'before_unreplied' is not defined` ——
-    每次发送都记一条"发送失败"，但客户其实收到了（日志在说谎）。
-    """
+    """校验函数必须收到发送前的截图，避免因缺少快照误报。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
 
-    def find(node):
-        for n in ast.iter_child_nodes(node):
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if n.name == "_confirm_screenshot_sent":
-                    return n
-                got = find(n)
-                if got is not None:
-                    return got
-        return None
-
-    fn = find(tree)
-    assert fn is not None, "找不到 _confirm_screenshot_sent"
-    params = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
-    assert "before" in params, "`before` 必须当参数传，不能靠闭包抓"
-    # 查 AST 而不是查源码字符串：docstring 里会引用这个名字做说明，字符串会误判
-    loaded = {n.id for n in ast.walk(fn)
-              if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    assert "before_unreplied" not in loaded, "函数体里不该直接引用 before_unreplied"
-    passed = [k for n in ast.walk(fn) if isinstance(n, ast.Call) for k in n.keywords]
+    send = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_do_send")
+    verify = next(n for n in ast.walk(send) if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Name) and n.func.id == "_verify_screenshot_sent")
     assert any(k.arg == "before" and isinstance(k.value, ast.Name)
-               and k.value.id == "before" for k in passed), \
-        "必须把 before 透传给 _verify_screenshot_sent(before=before)"
+               and k.value.id == "before" for k in verify.keywords)

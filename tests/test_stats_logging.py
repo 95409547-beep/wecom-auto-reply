@@ -122,7 +122,7 @@ def test_log_reply_has_decision_path(tmp_path):
 
 def test_send_queue_carries_log_context():
     src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
-    assert 'log_ctx = row[4] if len(row) > 4 else None' in src, "消费端要读第 5 项"
+    assert 'log_ctx = dict(row[4] or {}) if len(row) > 4 else {}' in src, "消费端要读第 5 项"
     assert '**(log_ctx or {})' in src, "要透传给 log_send_result"
     assert '"source": "auto"' in src, "自动发要标 source=auto"
     assert '"source": "hold"' in src, "转人工占位语要标 source=hold"

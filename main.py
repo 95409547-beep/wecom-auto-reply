@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -97,6 +98,7 @@ from rag import unanswered
 from config.manager import ConfigManager
 from wxbot.scanner import Scanner
 from wxbot.detector import MessageDetector
+from wxbot.delivery import ControlledSendQueue, SendNotStarted
 from wxbot.scan_policy import parse_whitelist, row_eligibility
 from wxbot.new_message_tracker import (NewMessageTracker, resolve_only_new_messages,
                                        row_fp, row_key)
@@ -266,7 +268,36 @@ def _main_impl():
     pending_queue = PendingQueue()
 
     # 线程安全发送队列：所有发送（直发 / 占位语 / 待人工发送）统一入队
-    send_queue: queue.Queue[tuple[str, str, str]] = queue.Queue()
+    def _retain_delivery(row, confirmed=False, reason=""):
+        """Keep unsuccessful outbound work visible, including after a restart."""
+        _mode, who, reply = row[:3]
+        context = row[4] if len(row) > 4 and row[4] else {}
+        key = context.get("pending_key")
+        if key is None:
+            message = context.get("customer_message") or "待发送回复，请核对会话"
+            hint = "delivery:" + hashlib.sha256((message + "\0" + reply).encode()).hexdigest()[:20]
+            pending_queue.push(
+                who, message, reply, guard_decision=reason, key_hint=hint,
+                send_status="unknown" if confirmed is None else "failed", send_error=reason)
+        else:
+            pending_queue.finish_send(key, confirmed, reason)
+        if not window._should_exit:
+            window.root.after(0, _refresh_pending_tab)
+
+    def _unresolved_delivery(who, reply, question=None):
+        return any(
+            item.send_status != "pending" and
+            (item.ai_reply == reply or (question and item.customer_message == question))
+            for item in pending_queue.get_all_of(who)
+        )
+
+    send_queue = ControlledSendQueue(
+        is_paused=window.is_paused,
+        allow_auto_send=lambda: bool(cfg.get("rag", {}).get("allow_auto_send", True)),
+        on_blocked=lambda row, reason: _retain_delivery(row, False, reason),
+        is_closed=lambda: window._should_exit,
+    )
+    window.on_pause = send_queue.cancel_pending
 
     # 改稿学习的勾选窗状态：同一时刻只开一个，后面的先排队
     _learn_state = {"busy": False, "queue": []}
@@ -324,9 +355,11 @@ def _main_impl():
         """刷新 GUI 的待人工页。"""
         window.refresh_pending_queue(pending_queue.get_all())
 
-    def _do_send(customer_name: str, reply_text: str) -> bool:
+    def _do_send(customer_name: str, reply_text: str, *, manual=False) -> bool | None:
         """实际发送。通道感知：api 模式走企业微信微信客服官方接口
         （customer_name 就是 external_userid）；截图模式切前台 + 粘贴 + 回车。"""
+        if not send_queue.permitted(manual=manual):
+            return False
         if api_channel is not None:
             try:
                 api_channel.send_text(customer_name, reply_text)
@@ -334,7 +367,8 @@ def _main_impl():
                 return True
             except Exception as e:
                 log.error(f"[发送失败·API] {customer_name}: {e}")
-                return False
+                return _api_send_failure(e)
+        attempted = False
         try:
             # ★ 发送前必须先把目标会话切到打开状态并**校验**。
             # 发送路径是"点输入框→粘贴→回车"，只作用于**当前打开的那个会话**：
@@ -360,46 +394,35 @@ def _main_impl():
                        f"的会话。请手动切到该会话，或检查会话名是否被 OCR 读错。")
                 root.after(0, lambda m=msg: window.set_banner(m, level="error"))
                 return False
-            sent = False
-            # ★ 发送前先记下"当前有哪些读得出字的未回复灰泡"。
-            #   校验靠的是**前后对比**：客户连发几条时，回完第一条以后
-            #   后面那条本来就没回复，只看"现在还有没有未回复灰泡"会误判成
-            #   没发出去 → 重发 → 客户收到两遍（2026-10-05 实测）。
-            before_unreplied = _unreplied_texts(scanner, detector, conf_bubble)
-            for attempt in (1, 2):
-                scanner._switch_to_wecom_and_back(
-                    lambda: scanner.send_message_via_keyboard(reply_text))
-                sent = _confirm_screenshot_sent(before_unreplied)
-                if sent:
-                    break
-                log.warning(f"[发送] 第 {attempt} 次发出后聊天区里没看到这条回复"
-                            f"（粘贴或回车可能没生效），重试一次")
-                time.sleep(0.6)
-            if not sent:
-                log.error(f"[发送失败] {customer_name}: 两次都没确认发出")
-                msg = (f"给「{customer_name}」的回复**可能没发出去** —— "
-                       f"粘贴或回车没生效。请手动看下会话。")
-                root.after(0, lambda m=msg: window.set_banner(m, level="error"))
+            before = scanner.capture_chat_area()
+            if not send_queue.permitted(manual=manual):
                 return False
-            log.info(f"[发送] {customer_name}: {reply_text[:80]}")
-            return True
+
+            def submit():
+                nonlocal attempted
+                attempted = True
+                scanner.send_message_via_keyboard(reply_text)
+
+            scanner._switch_to_wecom_and_back(submit)
+            result = _verify_screenshot_sent(scanner, detector, reply_text,
+                                             before=before, min_conf=conf_bubble)
+            if result is True:
+                log.info(f"[发送] {customer_name}: {reply_text[:80]}")
+            return result
+        except SendNotStarted as e:
+            log.warning(f"[发送中止] {customer_name}: {e}")
+            return False
         except Exception as e:
             log.error(f"[发送失败] {customer_name}: {e}")
-            return False
+            return None if attempted else False
 
-    def _confirm_screenshot_sent(before=None) -> bool:
-        """截图模式：发完顺带看一眼聊天区，确认这条真的出去了。
-
-        实现放在模块级 ``_verify_screenshot_sent`` 里 —— 闭包里没法测。
-
-        ★ ``before`` 必须**当参数传**，不能靠闭包抓：这个函数和 `_do_send`
-        是**兄弟**（都在 `_main_impl` 里），看不到对方的局部变量。
-        （2026-10-06 踩过：里面直接写 `before=before_unreplied` →
-          `NameError: name 'before_unreplied' is not defined` ——
-          每次发送都记一条"发送失败"，但客户其实收到了，日志在说谎。）
-        """
-        return _verify_screenshot_sent(scanner, detector, conf_bubble,
-                                       before=before)
+    def _send_greeting(who, text):
+        if _unresolved_delivery(who, text):
+            return None
+        result = _do_send(who, text)
+        if result is None:
+            _retain_delivery(("send", who, text), None, "欢迎语发送结果待核实")
+        return result
 
     def _process_send_queue_tick():
         """Process ONE send queue item per tick to avoid blocking GUI.
@@ -413,26 +436,50 @@ def _main_impl():
         第 5 项是**日志上下文**（客户原话 + 护栏判定 + decision_path + source），
         只用于落盘给运营看板统计，不参与业务判断。
         """
+        row = None
+        send_ok = False
+        scan_locked = False
         try:
+            if window._should_exit:
+                return
+            if api_channel is None:
+                scan_locked = _scan_lock.acquire(blocking=False)
+                if not scan_locked:
+                    return
             row = send_queue.get_nowait()
             mode, customer_name, reply_text = row[0], row[1], row[2]
             learn_ctx = row[3] if len(row) > 3 else None
-            log_ctx = row[4] if len(row) > 4 else None
+            log_ctx = dict(row[4] or {}) if len(row) > 4 else {}
+            pending_key = log_ctx.pop("pending_key", None)
+            manual = mode == "manual"
+            if pending_key and pending_queue.get_key(pending_key) is None:
+                return  # The user explicitly ignored/cancelled this pending item.
+            if not manual and _unresolved_delivery(
+                    customer_name, reply_text, log_ctx.get("customer_message")):
+                window.set_banner(f"{customer_name} 有未解决的发送记录，请先在待人工中核实。", level="warn")
+                return
+            if not send_queue.permitted(manual=manual):
+                _retain_delivery(row, False, "当前不允许自动发送")
+                return
             log.debug(f"发送队列处理: mode={mode} customer={customer_name}")
 
             # ★ 第一次跟这个客户说话 → 先招呼一句，正文放回队列下一轮发。
             # 分两轮是为了不让界面一次卡住两倍时间（发送是在 Tk 线程里跑的）。
-            if greet_first_contact(customer_name, cfg, _do_send,
+            if not manual and greet_first_contact(customer_name, cfg, _send_greeting,
                                    log_send=responder.log_send_result):
                 send_queue.put(row)
-                root.after(500, _process_send_queue_tick)
                 return
 
-            send_ok = _do_send(customer_name, reply_text)
+            send_ok = _do_send(customer_name, reply_text, manual=manual)
             # Log send result AFTER actual send (not optimistically)
             responder.log_send_result(customer_name, reply_text, send_ok,
                                       **(log_ctx or {}))
-            if send_ok:
+            if send_ok is True:
+                if pending_key:
+                    pending_queue.finish_send(pending_key, True)
+                    _refresh_pending_tab()
+                detector.mark_replied(customer_name)
+                detector.mark_text_sent(reply_text)
                 # ★ 这是**唯一**的发送出口（自动回复、占位语、欢迎语、人工代发都走
                 #   这条队列），所以在这里记一笔就能覆盖"软件发出去的所有消息"。
                 #   「消息」列放**发出去的原文** —— 店主看这一页就是想看"它替我发了啥"，
@@ -446,9 +493,22 @@ def _main_impl():
                         _record_direct_confirm(learn_ctx, reply_text)
                     else:
                         _learn_from_edit(learn_ctx, reply_text)
+            else:
+                reason = "发送结果待核实，请查看会话后再决定是否重试" if send_ok is None else "发送失败，待办已保留，可重试"
+                _retain_delivery(row, send_ok, reason)
+                window.set_banner(f"{customer_name}：{reason}", level="warn" if send_ok is None else "error")
         except queue.Empty:
             pass
-        root.after(500, _process_send_queue_tick)
+        except Exception as e:
+            log.exception("发送队列处理异常")
+            if row is not None and send_ok is not True:
+                _retain_delivery(row, send_ok, f"发送处理中断：{e}")
+        finally:
+            if row is not None:
+                send_queue.task_done()
+            if scan_locked:
+                _scan_lock.release()
+            root.after(500, _process_send_queue_tick)
 
     def _record_direct_confirm(ctx: dict, sent_text: str):
         """待人工页直接发送了 AI 草稿 → 把「客户问题 + 回答」收进「学到的」待确认。
@@ -595,6 +655,8 @@ def _main_impl():
             _refresh_pending_tab()
             return
         who = item.customer_name
+        if not _manual_send_allowed(item):
+            return
         draft = (item.ai_reply or "")
         if not draft.strip() or is_human_marker(draft):
             window.set_banner(
@@ -603,7 +665,8 @@ def _main_impl():
             log.warning(f"待人工发送被拦（无有效草稿）: {who} draft={draft!r}")
             return
 
-        pending_queue.remove_key(item.key)
+        if not pending_queue.begin_send(item.key, draft):
+            return
         # 带上"这是直发确认"的上下文：发送**成功之后**再把这个问答对收进「学到的」
         # （发失败就不该算店主认可过）
         ctx = {"direct_confirm": True,
@@ -614,7 +677,8 @@ def _main_impl():
                    "guard_decision": item.guard_decision or "",
                    "decision_path": "人工直发草稿",
                    "source": "human_confirm"}
-        send_queue.put(("send", who, item.ai_reply, ctx, log_ctx))
+        log_ctx["pending_key"] = item.key
+        send_queue.put(("manual", who, item.ai_reply, ctx, log_ctx))
         try:
             from rag import learn_store
             learn_store.bump_accept(item.customer_message, item.ai_reply)
@@ -636,16 +700,28 @@ def _main_impl():
             log.warning(f"待人工编辑发送：找不到这一条 {item_key!r}")
             _refresh_pending_tab()
             return
-        pending_queue.remove_key(item.key)
+        if not _manual_send_allowed(item):
+            return
         ctx = {"question": item.customer_message or "",
                "draft": item.ai_reply or ""}
+        if not pending_queue.begin_send(item.key, edited_text):
+            return
         log_ctx = {"customer_message": item.customer_message or "",
                    "guard_decision": item.guard_decision or "",
                    "decision_path": "人工改稿后发出",
                    "source": "human_edit"}
-        send_queue.put(("send", item.customer_name, edited_text, ctx, log_ctx))
+        log_ctx["pending_key"] = item.key
+        send_queue.put(("manual", item.customer_name, edited_text, ctx, log_ctx))
         log.info(f"待人工编辑发送: {item.customer_name}: {edited_text[:50]}")
         _refresh_pending_tab()
+
+    def _manual_send_allowed(item):
+        if window._should_exit:
+            return False
+        if item.send_status == "unknown":
+            from tkinter import messagebox
+            return messagebox.askyesno("发送结果待核实", "这条回复可能已经发出。请先查看会话，确认未送达后再重试。\n\n已核实未送达，继续发送？", parent=window.root)
+        return True
 
     def _get_pending_reply(item_key):
         """取草稿全文，供编辑对话框预填。"""
@@ -747,7 +823,8 @@ def _main_impl():
         except Exception:
             nick = uid
         await dispatch_api_nontext(
-            uid, items, send_queue, pending_queue, acks=acks,
+            uid, items, send_queue, pending_queue,
+            acks=acks if send_queue.permitted() else {},
             refresh_pending=lambda: root.after(0, _refresh_pending_tab),
             display_name=nick)
 
@@ -758,6 +835,9 @@ def _main_impl():
         事件里的 ``code`` 一次性且很快过期，所以拉到就发。
         同一个人短时间内重复进来只欢迎一次 —— 不然客户来回切一次就被招呼一次。
         """
+        generation = send_queue.capture_generation()
+        if not send_queue.permitted(generation=generation):
+            return
         from gateway.api_policy import should_welcome
         w = cfg.get("welcome", {}) or {}
         enabled = bool(w.get("on_enter_session", True))
@@ -773,10 +853,16 @@ def _main_impl():
             text = ps.get("welcome").strip()
         except Exception:
             text = ""
-        if not text:
+        if not text or _unresolved_delivery(uid, text):
             return
         try:
-            await asyncio.to_thread(api_channel.send_welcome, m.event_code, text)
+            def send_welcome():
+                if not send_queue.permitted(generation=generation):
+                    return False
+                api_channel.send_welcome(m.event_code, text, retries=1)
+                return True
+            if not await asyncio.to_thread(send_welcome):
+                return
             _welcomed[uid] = time.time()
             # 记进"招呼过"的共用名单：第一次回复时就不会再招呼一遍
             try:
@@ -787,6 +873,10 @@ def _main_impl():
             log.info(f"已发欢迎语 → {uid}")
         except Exception as e:
             log.warning(f"发欢迎语失败（事件 code 可能已过期）: {e}")
+            if _api_send_failure(e) is None:
+                _retain_delivery(("send", uid, text), None, "欢迎语发送结果待核实")
+                responder.log_send_result(uid, text, None, source="greeting",
+                                          decision_path="欢迎语")
 
     def _run_api_poll():
         """API 模式的取件循环。
@@ -798,6 +888,7 @@ def _main_impl():
             log.debug("上一轮 API 轮询未完成，跳过")
             return
         try:
+            send_queue.begin_production()
             if window.is_paused():
                 return
             config.reload()
@@ -853,6 +944,7 @@ def _main_impl():
             log.debug("上一轮扫描未完成，跳过")
             return
         try:
+            send_queue.begin_production()
             if window.is_paused():
                 return
 
@@ -1010,7 +1102,8 @@ def _main_impl():
                             # ★ 气泡在、一个字都读不出来 → 图片/语音/文件。
                             # 以前这里写"OCR空"就 continue 了，客户等于石沉大海。
                             _screenshot_nontext(send_queue, pending_queue,
-                                                customer_name, len(unreplied))
+                                                customer_name, len(unreplied),
+                                                allow_auto_send=bool(cfg.get("rag", {}).get("allow_auto_send", True)))
                             detector.mark_clicked(customer_red_y, timeout=30)
                             return
                         fresh = detector.unseen_texts(customer_name, bubble_texts)
@@ -1022,7 +1115,8 @@ def _main_impl():
                         if len(text) < 2:
                             # 读出来的太短（比如语音气泡的"3″"）→ 也当非文本
                             _screenshot_nontext(send_queue, pending_queue,
-                                                customer_name, len(unreplied))
+                                                customer_name, len(unreplied),
+                                                allow_auto_send=bool(cfg.get("rag", {}).get("allow_auto_send", True)))
                             detector.mark_clicked(customer_red_y, timeout=30)
                             return
                         else:
@@ -1095,9 +1189,7 @@ def _main_impl():
                                              "guard_reason": result.guard_reason,
                                              "decision_path": result.decision_path,
                                              "source": "auto"}))
-                                        detector.mark_replied(customer_name)
                                         detector.mark_message_seen(customer_name, text)
-                                        detector.mark_text_sent(result.reply_text)
                                         detector.clear_seen()
                                         replied = True
                                         if save_debug:
@@ -1124,7 +1216,6 @@ def _main_impl():
                                                       "guard_reason": result.guard_reason,
                                                       "decision_path": result.decision_path,
                                                       "source": "hold"}))
-                                                detector.mark_replied(customer_name)
                                             # 连同 AI 草稿放进「待人工」，等人工发送/编辑
                                             pending_queue.push(
                                                 customer_name, text,
@@ -1176,10 +1267,9 @@ def _main_impl():
                         log.info(f"无需回复(兜底): {fb_cust} - {result.reason}")
                     elif result.success and result.dispatch_level == "auto_send":
                         # Unified send path
-                        send_queue.put(("send", fb_cust, result.reply_text))
-                        detector.mark_replied(fb_cust)
+                        send_queue.put(("send", fb_cust, result.reply_text, None,
+                                        {"customer_message": fb_text, "source": "auto"}))
                         detector.mark_message_seen(fb_cust, fb_text)
-                        detector.mark_text_sent(result.reply_text)
                         detector.clear_seen()
                     elif result.escalated:
                         detector.mark_message_seen(fb_cust, fb_text)
@@ -1189,8 +1279,8 @@ def _main_impl():
                                           fb_cust)
                         # 转人工：自动回一句礼貌占位语，让客户稍等
                         if result.hold_text:
-                            send_queue.put(("send", fb_cust, result.hold_text))
-                            detector.mark_replied(fb_cust)
+                            send_queue.put(("send", fb_cust, result.hold_text, None,
+                                            {"customer_message": fb_text, "source": "hold"}))
                         # 连同 AI 草稿放进「待人工」
                         pending_queue.push(
                             fb_cust, fb_text, result.reply_text,
@@ -1440,7 +1530,7 @@ async def _scan_fallback(scanner: Scanner, detector: MessageDetector,
             # 队列可能是 None（测试/被别处调用）—— 那就只记日志，别在这里崩。
             if send_queue is not None and pending_queue is not None:
                 _screenshot_nontext(send_queue, pending_queue, cust_key,
-                                    len(unreplied))
+                                    len(unreplied), allow_auto_send=bool(cfg.get("rag", {}).get("allow_auto_send", True)))
             else:
                 log.warning("读不出文字的气泡 %d 个，但队列没传进来，跳过应答: %r",
                             len(unreplied), cust_key)
@@ -1456,7 +1546,7 @@ async def _scan_fallback(scanner: Scanner, detector: MessageDetector,
         combined = " ".join(fresh).strip()
         if len(combined) < 2:
             _screenshot_nontext(send_queue, pending_queue, cust_key,
-                                len(unreplied))
+                                len(unreplied), allow_auto_send=bool(cfg.get("rag", {}).get("allow_auto_send", True)))
             _settle(i, this_key, this_fp)
             detector.mark_clicked(y, fingerprint=this_fp, timeout=30)
             continue
@@ -1565,10 +1655,10 @@ def greet_first_contact(customer_name: str, cfg: dict, send_fn,
     _GREET_TRIED.add(customer_name)          # 试过就不再试，成败都算
     ok = False
     try:
-        ok = bool(send_fn(customer_name, text))
+        ok = send_fn(customer_name, text)
     except Exception as e:
         log.warning(f"发欢迎语出错（不影响正文）: {e}")
-    if ok:
+    if ok is True:
         try:
             first_contact.mark_greeted(customer_name)
         except Exception as e:
@@ -1586,59 +1676,43 @@ def greet_first_contact(customer_name: str, cfg: dict, send_fn,
     return True
 
 
-def _unreplied_texts(scanner, detector, min_conf: float = 0.5):
-    """当前聊天区里"**读得出字的未回复灰泡**"文字集合；拿不到图返回 ``None``。
+def _api_send_failure(error) -> bool | None:
+    from gateway.wecom_kf import WeComKFError
 
-    读不出字的（图片/语音）不算 —— 它们本来就不能当"没发出去"的证据。
-    """
-    img = scanner.capture_chat_area()
-    if img is None:
+    if isinstance(error, WeComKFError) and not error.delivery_unknown:
+        return False
+    return None
+
+
+def _verify_screenshot_sent(scanner, detector, reply_text: str, *,
+                            before, min_conf: float = 0.5) -> bool | None:
+    """Confirm only a newly visible outgoing bubble matching the submitted text."""
+    if before is None:
         return None
-    unreplied, _has_blue, _replied = detector.extract_bubbles_detail(img)
-    if not unreplied:
-        return set()
-    return {t for t in (detector.extract_text(b, min_conf=min_conf).strip()
-                        for b, _ in unreplied) if t}
-
-
-def _verify_screenshot_sent(scanner, detector, min_conf: float = 0.5,
-                            before=None) -> bool:
-    """截图模式：发完顺带看一眼聊天区，确认这条真的出去了。
-
-    "点输入框→粘贴→回车"这条路上**没有任何回执** —— 剪贴板没设上、
-    回车没生效、焦点跑了，代码都不知道，照样当成功。客户那边就是干等，
-    而日志里写着"[发送]"、看不出异常。（API 模式有接口返回值，所以那边不用这个。）
-
-    ★ 判据必须是**发送前后对比**，不能只看"现在还有没有未回复灰泡"。
-    起因（2026-10-05 实测）：客户连着发了好几条，机器人回了第一条之后，
-    后面那条灰泡**本来就没回复**：
-        未回复 = ['你去过厦门吗', '你今天心情怎么样？']
-    旧判据看到"还有未回复灰泡"就判成"没发出去"→ 重发 → **客户收到两遍**
-    （日志里连续两条「第 1/2 次发出后聊天区里没看到这条回复」）。
-
-    新判据：
-      * 拿不到图 / 读不出字 → 当成功（宁可漏一次确认，也不能给客户发两遍）
-      * 未回复气泡清空了 → 成功
-      * 和发送前**一模一样**（一个字都没变）→ 大概率粘贴/回车没生效 → 允许重试
-      * 变少了、或冒出了发送前没有的新消息 → 成功（别拿新消息当"我没发出去"）
-    """
     try:
-        time.sleep(0.4)                         # 等气泡渲染出来
-        after = _unreplied_texts(scanner, detector, min_conf)
+        time.sleep(0.4)  # Let the client render the outgoing message.
+        after = scanner.capture_chat_area()
         if after is None:
+            return None
+        bubble = detector.extract_latest_outgoing(after)
+        if bubble is None:
+            return None
+        previous = detector.extract_latest_outgoing(before)
+        if (previous is not None and previous.size == bubble.size
+                and previous.tobytes() == bubble.tobytes()):
+            return None
+
+        recognized = detector.extract_text(bubble, min_conf=min_conf)
+        normalized = lambda value: "".join(unicodedata.normalize("NFKC", value).split())
+        if recognized and normalized(recognized) == normalized(reply_text):
             return True
-        if not after:
-            return True
-        if before and after == before:
-            return False
-        return True
     except Exception as e:
-        log.debug(f"发送确认异常（当成功处理）: {e}")
-        return True
+        log.debug(f"发送确认异常（待核实）: {e}")
+    return None
 
 
 def _screenshot_nontext(send_queue, pending_queue, customer_name: str,
-                        bubble_count: int = 1) -> str:
+                         bubble_count: int = 1, allow_auto_send: bool = True) -> str:
     """截图模式：**气泡在，但读不出字** → 当成图片/语音/文件处理。
 
     以前这种情况走到 ``OCR空`` 就 `continue` 了 —— 客户发张器材照片问"这个有吗"，
@@ -1656,7 +1730,7 @@ def _screenshot_nontext(send_queue, pending_queue, customer_name: str,
     except Exception:
         acks = {}
     ack = pick_nontext_ack(["其它"], acks)
-    if ack:
+    if ack and allow_auto_send:
         send_queue.put(("send", customer_name, ack))
     pending_queue.push(
         customer_name, "（客户发来图片/语音/文件，请打开会话查看）", "", 0.0,

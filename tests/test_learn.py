@@ -521,15 +521,15 @@ def test_edit_send_carries_learn_context():
     assert '"question": item.customer_message' in s
     # 2026-10-03：队列项多了第 5 项「日志上下文」（给运营看板统计用），
     # 学习仍只看第 4 项 ctx —— 两者互不影响
-    assert 'send_queue.put(("send", item.customer_name, edited_text, ctx, log_ctx))' in s
+    assert 'send_queue.put(("manual", item.customer_name, edited_text, ctx, log_ctx))' in s
 
 
 def test_learning_triggered_only_after_send_ok():
     """学习挂在真的发出去之后 —— 发失败（发错人中止）的话不该被学走。"""
     s = _main_src()
-    assert "if send_ok:" in s
+    assert "if send_ok is True:" in s
     assert "_learn_from_edit(learn_ctx, reply_text)" in s
-    idx_ok = s.index("if send_ok:")
+    idx_ok = s.index("if send_ok is True:")
     idx_learn = s.index("_learn_from_edit(learn_ctx, reply_text)")
     assert idx_ok < idx_learn
 
@@ -594,7 +594,7 @@ def test_direct_send_records_qa_pair():
     main_src = _main_src()
     assert '"direct_confirm": True' in main_src
     assert "_record_direct_confirm(learn_ctx, reply_text)" in main_src
-    i_ok = main_src.index("if send_ok:")
+    i_ok = main_src.index("if send_ok is True:")
     i_rec = main_src.index("_record_direct_confirm(learn_ctx, reply_text)")
     assert i_ok < i_rec, "没发出去就不算店主认可过"
 

@@ -119,6 +119,8 @@ def read_reply_log(path: Path) -> list[dict]:
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if "sent" in r and r["sent"] is not True:
+            continue
         ts = _parse_ts(r.get("timestamp"))
         if ts is None:
             continue

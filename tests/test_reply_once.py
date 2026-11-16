@@ -168,8 +168,7 @@ def test_both_paths_filter_per_bubble():
     s = _main_src()
     assert s.count("detector.unseen_texts(") == 2, "红点路径和兜底路径都要逐条过滤"
     assert s.count("detector.mark_messages_seen(") >= 2, "两条路径处理完都要逐条记为已见"
-    # 两条扫描路径 + 发送后确认（确认也用它看蓝泡在不在最下面）
-    assert s.count("detector.extract_bubbles_detail(") == 3
+    assert s.count("detector.extract_bubbles_detail(") == 2, "两条接收路径都要读气泡"
     assert s.count("_mark_already_replied(") >= 3, "「人工回过也算回过」两条路径都要做"
 
 

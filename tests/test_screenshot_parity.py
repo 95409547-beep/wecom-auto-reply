@@ -84,137 +84,56 @@ def test_already_seen_bubbles_are_not_treated_as_nontext():
 
 # ── ⑤ 截图模式：发完确认 ──────────────────────────────────────────────
 
-def test_send_verifies_then_retries_once():
-    s = _main_src()
-    # 校验要带上"发送前的未回复快照" —— 否则客户连发多条时会误判成"没发出去"
-    assert "_confirm_screenshot_sent(before_unreplied)" in s
-    assert "for attempt in (1, 2):" in s
-    assert "两次都没确认发出" in s
-
-
-def test_verify_compares_before_and_after():
-    """判据是**发送前后对比**，不是"现在还有没有未回复灰泡"。
-
-    只看"还有未回复灰泡"会误判：客户连发几条时，回完第一条以后后面那条本来
-    就没回复 → 判成"没发出去"→ 重发 → 客户收到两遍（2026-10-05 实测）。
-    """
-    import inspect
+@pytest.mark.parametrize(
+    "scenario, expected",
+    [
+        ("new_matching_reply", True),
+        ("new_matching_reply_with_new_customer_message", True),
+        ("old_matching_reply", None),
+        ("new_unrelated_reply", None),
+        ("only_new_customer_message", None),
+        ("ocr_unreadable", None),
+        ("no_before_capture", None),
+        ("no_after_capture", None),
+    ],
+)
+def test_verify_only_confirms_new_matching_outgoing_bubble(monkeypatch, scenario, expected):
+    from unittest.mock import Mock
+    from PIL import Image, ImageDraw
     import main as main_mod
-    src = inspect.getsource(main_mod._verify_screenshot_sent)
-    helper = inspect.getsource(main_mod._unreplied_texts)
-    assert "extract_bubbles_detail" in helper      # 判据仍然基于气泡检测
-    assert "after == before" in src
+    from wxbot.detector import MessageDetector
 
+    def screenshot(outgoing=None, incoming=False):
+        img = Image.new("RGB", (400, 600), "white")
+        draw = ImageDraw.Draw(img)
+        if outgoing is not None:
+            draw.rectangle((230, 190, 370, 220), fill=(193, 219, 250))
+            draw.rectangle((250, 201, 250 + outgoing, 211), fill="black")
+        if incoming:
+            draw.rectangle((17, 320, 140, 345), fill=(230, 230, 230))
+        return img
 
-def test_verify_defaults_to_success_when_unreadable():
-    """读不到聊天区 → 当成功（宁可不重发，也不能给客户发两遍）。"""
-    import main as main_mod
+    before = screenshot(outgoing=4, incoming=True)
+    after = screenshot(outgoing=16, incoming=scenario.endswith("customer_message"))
+    recognized = "答案 123"
+    if scenario == "old_matching_reply":
+        after = before.copy()
+    elif scenario == "new_unrelated_reply":
+        recognized = "其他内容"
+    elif scenario == "only_new_customer_message":
+        after = screenshot(outgoing=4, incoming=False)
+    elif scenario == "ocr_unreadable":
+        recognized = ""
+    elif scenario == "no_before_capture":
+        before = None
+    elif scenario == "no_after_capture":
+        after = None
+    detector = MessageDetector({})
+    monkeypatch.setattr(detector, "extract_text", Mock(return_value=recognized))
+    monkeypatch.setattr(main_mod.time, "sleep", Mock())
+    scanner = Mock()
+    scanner.capture_chat_area.return_value = after
 
-    class _Scanner:
-        def capture_chat_area(self):
-            return None
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            raise AssertionError("不该走到这儿")
-
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det()) is True
-
-
-def test_verify_detects_unanswered_bubble():
-    """没发出去：客户那条灰泡**和发送前一模一样** → 判定失败，触发重试。"""
-    from PIL import Image
-    import main as main_mod
-
-    class _Scanner:
-        def capture_chat_area(self):
-            return Image.new("RGB", (400, 600), (255, 255, 255))
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            return [(Image.new("RGB", (10, 10)), None)], False, []
-
-        def extract_text(self, b, min_conf=None):
-            return "客户的问题还在"
-
-    before = {"客户的问题还在"}
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det(), before=before) is False
-
-
-def test_verify_does_not_resend_when_new_message_arrived():
-    """★ 真实故障回归（2026-10-05）：客户连发多条时不能判成"没发出去"。
-
-    现场：客户先发「你去过厦门吗」、再发「你今天心情怎么样？」，机器人回了第一条。
-    发送后聊天区里"未回复"= 两条（后面那条本来就还没回），旧判据看到
-    "还有读得出字的未回复灰泡"就判失败 → 重发 → **客户收到两遍**
-    「帮您问下今天的心情状况，稍等～」。
-    """
-    from PIL import Image
-    import main as main_mod
-
-    class _Scanner:
-        def capture_chat_area(self):
-            return Image.new("RGB", (400, 600), (255, 255, 255))
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            return [(Image.new("RGB", (10, 10)), None)], False, []
-
-        def extract_text(self, b, min_conf=None):
-            return "你今天心情怎么样？"          # 冒出了发送前没有的新消息
-
-    before = {"你去过厦门吗"}
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det(), before=before) is True
-
-
-def test_verify_no_before_snapshot_never_resends():
-    """没拿到发送前的快照 → 无法判断，一律当成功（宁可漏确认，不可发两遍）。"""
-    from PIL import Image
-    import main as main_mod
-
-    class _Scanner:
-        def capture_chat_area(self):
-            return Image.new("RGB", (400, 600), (255, 255, 255))
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            return [(Image.new("RGB", (10, 10)), None)], False, []
-
-        def extract_text(self, b, min_conf=None):
-            return "客户的问题还在"
-
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det(), before=None) is True
-
-
-def test_verify_success_when_nothing_unreplied():
-    from PIL import Image
-    import main as main_mod
-
-    class _Scanner:
-        def capture_chat_area(self):
-            return Image.new("RGB", (400, 600), (255, 255, 255))
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            return None, True, []          # 我们的蓝泡在最下面 → 发出去了
-
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det()) is True
-
-
-def test_verify_success_when_bubbles_unreadable():
-    """有未回复气泡但读不出字 → 判不准，当成功（不乱重发）。"""
-    from PIL import Image
-    import main as main_mod
-
-    class _Scanner:
-        def capture_chat_area(self):
-            return Image.new("RGB", (400, 600), (255, 255, 255))
-
-    class _Det:
-        def extract_bubbles_detail(self, img):
-            return [(Image.new("RGB", (10, 10)), None)], False, []
-
-        def extract_text(self, b, min_conf=None):
-            return ""
-
-    assert main_mod._verify_screenshot_sent(_Scanner(), _Det()) is True
+    assert main_mod._verify_screenshot_sent(
+        scanner, detector, "答案123", before=before
+    ) is expected

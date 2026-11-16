@@ -259,7 +259,7 @@ class Responder:
             logger.warning(f"Failed to write reply log: {e}")
 
     def log_send_result(self, customer_name: str, reply_text: str,
-                        send_ok: bool, customer_message: str = "",
+                        send_ok: bool | None, customer_message: str = "",
                         guard_decision: str = "", guard_reason: str = "",
                         decision_path: str = "", source: str = "auto"):
         """Log auto-send outcome AFTER the actual send completes.
@@ -293,12 +293,18 @@ class Responder:
                 "source": source,
                 "generated": True,
                 "sent": send_ok,
+                "delivery_status": "confirmed" if send_ok is True else ("unknown" if send_ok is None else "failed"),
                 "escalated": False,
             }
             with open(self._log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning(f"Failed to write send log: {e}")
+        if send_ok is True and getattr(self, "_context", None) is not None:
+            try:
+                self._context.append(customer_name, "assistant", reply_text)
+            except Exception as e:
+                logger.warning(f"已发送，但会话历史写入失败: {e}")
 
     async def _smalltalk_result(self, text: str, customer_name: str,
                                 top_score: float):
@@ -728,6 +734,13 @@ class Responder:
             self._context.append, customer_name, "customer", text)
 
         result = await self.generate_reply(customer_name, messages)
+        if not self._allow_auto_send:
+            result.hold_text = ""
+            if result.dispatch_level == "auto_send":
+                result.success = False
+                result.escalated = True
+                result.dispatch_level = "human_handle"
+                result.reason = "仅人工模式，请确认后发送"
         # 决策路径统一在这里补齐（各分支只管 guard_decision/reason，不用每条都写）
         if not result.decision_path:
             result.decision_path = decision_path_of(
@@ -740,9 +753,7 @@ class Responder:
             # levels, log immediately since no send will be attempted.
             if result.dispatch_level != "auto_send":
                 self._log_reply(customer_name, text, result)
-            # Record assistant reply
-            await asyncio.to_thread(
-                self._context.append, customer_name, "assistant", result.reply_text)
+            # Assistant history is recorded only after confirmed delivery.
         elif result.dispatch_level == "no_reply":
             # 审计：记录"判断为无需回复"，不产生任何 assistant 回复
             self._log_reply(customer_name, text, result)
