@@ -8,24 +8,24 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-# ── 颜色（取自 Stripe 规范，另按需要补了浅底与语义色）────────────────────────
+# Neutral surfaces and monochrome controls; colour is reserved for status.
 COLORS = {
     "canvas": "#ffffff",
-    "canvas_soft": "#f5f5f7",
-    "canvas_sunken": "#ededf0",
-    "sidebar": "#eef0f4",
-    "hairline": "#e3e4e9",
-    "hairline_strong": "#cbced6",
-    "ink": "#1d1d1f",
-    "ink_secondary": "#373941",
-    "ink_mute": "#636675",
-    "ink_faint": "#6b6e7b",
+    "canvas_soft": "#ffffff",
+    "canvas_sunken": "#f0f0f0",
+    "sidebar": "#f9f9f9",
+    "hairline": "#ebebeb",
+    "hairline_strong": "#d4d4d4",
+    "ink": "#202020",
+    "ink_secondary": "#404040",
+    "ink_mute": "#707070",
+    "ink_faint": "#767676",
     "on_primary": "#ffffff",
-    "primary": "#006bd6",
-    "primary_deep": "#0056ad",
-    "primary_press": "#004486",
-    "primary_soft": "#518fd2",
-    "primary_subtle": "#e4efff",
+    "primary": "#212121",
+    "primary_deep": "#383838",
+    "primary_press": "#111111",
+    "primary_soft": "#858585",
+    "primary_subtle": "#eaeaea",
     "success": "#187343",
     "success_bg": "#e8f6ee",
     "warning": "#7a530a",
@@ -36,7 +36,7 @@ COLORS = {
     "info_bg": "#e8f2fd",
 }
 
-FONT_FAMILY = "微软雅黑"
+FONT_FAMILY = "Microsoft YaHei UI"
 
 # ── 缩放：整个界面按一个因子等比放大/缩小 ─────────────────────────────────
 #
@@ -86,10 +86,10 @@ def detect_dpi_scale(root: tk.Misc) -> float:
 #   缩放只由我们自己控制一次，尺寸可预测。
 SIZES = {
     "kpi": 28,       # 大数字
-    "h1": 24,        # 页面标题
+    "h1": 20,        # 页面标题
     "h2": 18,        # 卡片标题
     "h3": 14,        # 小节标题
-    "body": 13,      # 正文
+    "body": 14,      # 正文
     "small": 12,     # 辅助说明
     "micro": 11,     # 标签/角标
 }
@@ -104,7 +104,7 @@ def font(size_key: str = "body", bold: bool = False):
 # ── 间距（8px 栅格）────────────────────────────────────────────────────────
 SPACE = {"xxs": 2, "xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32}
 
-RADIUS = {"card": 8, "control": 6, "pill": 999}   # 自绘圆角用
+RADIUS = {"card": 12, "control": 10, "pill": 999}   # 自绘圆角用
 
 
 def _control_plate(master, radius, fill, border=None):
@@ -124,41 +124,44 @@ def _configure_buttons(root, style):
         "TButton": (c["canvas"], c["canvas_sunken"], c["hairline"], c["ink"], False),
         "Primary.TButton": (c["primary"], c["primary_deep"], None, c["on_primary"], True),
         "Secondary.TButton": (c["canvas"], c["primary_subtle"], c["hairline"], c["primary_deep"], False),
-        "Ghost.TButton": (c["canvas_sunken"], c["hairline"], None, c["ink_secondary"], False),
+        "Ghost.TButton": (c["canvas"], c["canvas_sunken"], None, c["ink_secondary"], False),
         "Danger.TButton": (c["canvas"], c["danger_bg"], None, c["danger"], False),
-        "Segment.TButton": (c["canvas_sunken"], c["hairline"], None, c["ink_secondary"], False),
-        "SegmentOn.TButton": (c["primary_subtle"], "#d4e5fc", None, c["primary_deep"], True),
+        "Segment.TButton": (c["canvas"], c["canvas_sunken"], None, c["ink_mute"], False),
+        "SegmentOn.TButton": (c["canvas_sunken"], c["primary_subtle"], None, c["ink"], False),
         "Page.TButton": (c["sidebar"], c["hairline"], None, c["ink"], False),
-        "PageOn.TButton": (c["primary_subtle"], "#d4e5fc", None, c["primary_deep"], True),
+        "PageOn.TButton": (c["primary_subtle"], "#e2e2e2", None, c["ink"], False),
     }
     app = root._root()
     assets = getattr(app, "_button_images", None)
     if assets is None:
         assets = app._button_images = {}
-    radius = px(7)
+    radius = px(RADIUS["control"])
     for name, (fill, hover, border, ink, bold) in specs.items():
         element = f"Desk{radius}.{name}.plate"
         if element not in assets:
             pressed_fill = c["primary_press"] if name == "Primary.TButton" else hover
             disabled_fill = c["canvas_sunken"] if fill != c["sidebar"] else fill
-            normal, active, pressed, disabled = assets[element] = (
+            normal, active, pressed, disabled, focused = assets[element] = (
                 _control_plate(root, radius, fill, border),
                 _control_plate(root, radius, hover, border),
                 _control_plate(root, radius, pressed_fill, border),
-                _control_plate(root, radius, disabled_fill))
+                _control_plate(root, radius, disabled_fill),
+                _control_plate(root, radius, fill, c["primary_soft"]))
             style.element_create(element, "image", normal, ("disabled", disabled),
-                                 ("pressed", pressed), ("active", active),
+                                 ("pressed", pressed), ("focus", focused), ("active", active),
                                  border=radius, padding=0, sticky="nswe")
         style.layout(name, [(element, {"sticky": "nswe", "children": [
             ("Button.padding", {"sticky": "nswe", "children": [
-                ("Button.focus", {"sticky": "nswe", "children": [
-                    ("Button.label", {"sticky": "nswe"})]})]})]})])
+                ("Button.label", {"sticky": "nswe"})]})]})])
         page = name.startswith("Page")
-        style.configure(name, foreground=ink, font=font("body", bold), width=0,
-                        padding=(px(12), px(9 if page else 7)),
+        style.configure(name, foreground=ink, background=c["sidebar"] if page else c["canvas"],
+                        font=font("body", bold), width=0,
+                        padding=(px(12), px(11 if page else 8)),
                         anchor="w" if page else "center",
                         focusthickness=1, focuscolor=c["primary_soft"])
-        style.map(name, foreground=[("disabled", c["ink_faint"])])
+        backing = c["sidebar"] if page else c["canvas"]
+        style.map(name, foreground=[("disabled", c["ink_faint"])],
+                  background=[("disabled", backing), ("active", backing)])
 
     tab = f"Desk{radius}.Notebook.plate"
     if tab not in assets:
@@ -174,14 +177,14 @@ def _configure_buttons(root, style):
                 ("Notebook.label", {"sticky": ""})]})]})]})])
 
 
-def ui_icon(root, name, size=18, *, tile=False):
+def ui_icon(root, name, size=18, *, tile=False, color=None):
     """Draw small line icons with Windows-independent geometry."""
     dim = px(size)
     image = Image.new("RGBA", (dim * 3, dim * 3))
     draw = ImageDraw.Draw(image)
     step = dim * 3 / 24
     stroke = max(2, round(step * 1.7))
-    ink = COLORS["primary"]
+    ink = color or COLORS["ink_secondary"]
 
     def points(*values):
         return tuple(round(v * step) for v in values)
@@ -209,6 +212,15 @@ def ui_icon(root, name, size=18, *, tile=False):
             line(x, top, x, 17)
     elif name == "book":
         line(12, 7, 9, 5, 4, 5, 4, 17, 8, 17, 12, 19, 16, 17, 20, 17, 20, 5, 15, 5, 12, 7, 12, 19)
+    elif name == "settings":
+        for x, y in ((6, 8), (12, 16), (18, 10)):
+            line(x, 4, x, y - 2)
+            line(x, y + 2, x, 20)
+            draw.ellipse(points(x - 2, y - 2, x + 2, y + 2), outline=ink, width=stroke)
+    elif name == "play":
+        draw.polygon(points(8, 5, 19, 12, 8, 19), fill=ink)
+    elif name == "stop":
+        draw.rounded_rectangle(points(6, 6, 18, 18), radius=round(2 * step), fill=ink)
     return ImageTk.PhotoImage(image.resize((dim, dim), Image.Resampling.LANCZOS), master=root)
 
 
@@ -279,13 +291,13 @@ def apply_theme(root: tk.Misc, scale_factor: float | None = None) -> ttk.Style:
 
     # ── 表格 ────────────────────────────────────────────────────────────
     style.configure("Treeview", background=c["canvas"], fieldbackground=c["canvas"],
-                    foreground=c["ink"], rowheight=px(31), borderwidth=0, relief="flat",
+                    foreground=c["ink"], rowheight=px(38), borderwidth=0, relief="flat",
                     font=font("body"))
     style.layout("Treeview", [("Treeview.padding", {"sticky": "nswe", "children": [
         ("Treeview.treearea", {"sticky": "nswe"})]})])
-    style.configure("Treeview.Heading", background=c["canvas_sunken"],
-                    foreground=c["ink_mute"], font=font("small", True),
-                    relief="flat", padding=(px(10), px(7)))
+    style.configure("Treeview.Heading", background=c["sidebar"],
+                    foreground=c["ink_mute"], font=font("small"),
+                    relief="flat", padding=(px(12), px(12)))
     style.map("Treeview.Heading", background=[("active", c["canvas_sunken"])])
     style.map("Treeview", background=[("selected", c["primary_subtle"])],
               foreground=[("selected", c["ink"])])
@@ -314,6 +326,22 @@ def apply_theme(root: tk.Misc, scale_factor: float | None = None) -> ttk.Style:
     style.configure("Horizontal.TScrollbar", background=c["canvas_sunken"],
                     troughcolor=c["canvas_soft"], bordercolor=c["canvas_soft"],
                     arrowcolor=c["ink_mute"], borderwidth=0)
+    # A quiet track and rounded thumb, without the native desktop arrow boxes.
+    assets = root._root()._button_images
+    thumb = f"Desk{px(4)}.Scrollbar.thumb"
+    if thumb not in assets:
+        normal, active = assets[thumb] = (
+            _control_plate(root, px(4), c["hairline_strong"]),
+            _control_plate(root, px(4), c["ink_faint"]))
+        style.element_create(thumb, "image", normal, ("active", active),
+                             border=px(4), sticky="nswe")
+    for direction, sticky in (("Vertical", "ns"), ("Horizontal", "ew")):
+        style.layout(f"{direction}.TScrollbar", [
+            (f"{direction}.Scrollbar.trough", {"sticky": "nswe", "children": [
+                (thumb, {"sticky": sticky, "expand": True})]})])
+        style.configure(f"{direction}.TScrollbar", troughcolor=c["canvas"],
+                        bordercolor=c["canvas"], lightcolor=c["canvas"], darkcolor=c["canvas"],
+                        arrowsize=px(10), gripcount=0)
 
     # ── 标签页 + 分区框 ─────────────────────────────────────────────────
     # 这两个是"所有对话框共用"的容器：在 theme 里统一定义一次，

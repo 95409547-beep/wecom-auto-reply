@@ -133,7 +133,7 @@ class MainWindow:
                  on_dashboard: Callable = None, can_start: Callable = None):
         self.on_pause = on_pause
         self.on_resume = on_resume
-        # 「设置」常驻在头部，任何状态（未启动/运行中/已配置过）都能点开重配
+        # 「设置」常驻侧栏底部，任何状态都能点开重配。
         self.on_settings = on_settings
         # 「知识库」：编辑提示词 / 管理资料库（常驻，任何时候可点）
         self.on_kb = on_kb
@@ -197,7 +197,7 @@ class MainWindow:
 
         # ★ 先把设计系统装上（ttk 样式必须在创建控件之前生效）
         apply_theme(self.root)
-        self.root.minsize(min(px(780), sw - px(32)), min(px(540), sh - px(96)))
+        self.root.minsize(min(px(920), sw - px(32)), min(px(540), sh - px(96)))
         # 窗口被拖动改大小 → 重排头部 + 表格列按比例（防抖，见 _on_root_configure）
         self.root.bind("<Configure>", self._on_root_configure)
         self.root.configure(background=COLORS["canvas_soft"])
@@ -231,34 +231,18 @@ class MainWindow:
         self._layout_shell(w)
 
     def _layout_shell(self, width):
-        """Use a vertical sidebar when the content can keep a comfortable width."""
+        """Keep navigation and service controls at the left at every window size."""
         compact = width < px(970)
         if compact == getattr(self, "_compact_navigation", None):
             return
         self._compact_navigation = compact
-        self._sidebar.grid_forget()
-        self._content.grid_forget()
-        self._brand.pack_forget()
-        for button in self._navigation.values():
-            button.pack_forget()
-        self._shell.grid_columnconfigure(0, weight=int(compact))
-        self._shell.grid_columnconfigure(1, weight=int(not compact))
-        self._shell.grid_rowconfigure(0, weight=int(not compact))
-        self._shell.grid_rowconfigure(1, weight=int(compact))
-        if compact:
-            self._sidebar.pack_propagate(True)
-            self._sidebar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 1))
-            self._content.grid(row=1, column=0, columnspan=2, sticky="nsew")
-            for button in self._navigation.values():
-                button.pack(side=tk.LEFT, padx=(px(8), 0), pady=px(6))
-        else:
-            self._sidebar.configure(width=px(184))
-            self._sidebar.pack_propagate(False)
-            self._sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 1))
-            self._content.grid(row=0, column=1, sticky="nsew")
-            self._brand.pack(fill=tk.X, padx=px(14), pady=(px(16), px(22)))
-            for button in self._navigation.values():
-                button.pack(fill=tk.X, padx=px(10), pady=(0, px(4)))
+        self._shell.grid_columnconfigure(0, weight=0)
+        self._shell.grid_columnconfigure(1, weight=1)
+        self._shell.grid_rowconfigure(0, weight=1)
+        self._sidebar.configure(width=px(176 if compact else 224))
+        self._sidebar.pack_propagate(False)
+        self._sidebar.grid(row=0, column=0, sticky="ns")
+        self._content.grid(row=0, column=1, sticky="nsew")
 
     def _on_root_configure(self, event=None):
         """窗口被拖动改大小 → 防抖后重排头部 + 按比例分表格列。"""
@@ -311,28 +295,41 @@ class MainWindow:
     def _create_header(self):
         toolbar = tk.Frame(self._content, background=COLORS["canvas"])
         toolbar.pack(fill=tk.X)
-        actions = tk.Frame(toolbar, background=COLORS["canvas"])
-        actions.pack(side=tk.RIGHT, padx=px(22), pady=px(13))
-        self._settings_btn = ttk.Button(actions, text="设置", style="Ghost.TButton",
-                                        command=self._on_settings_clicked)
-        self._settings_btn.pack(side=tk.LEFT, padx=(0, px(8)))
-        self._pause_btn = ttk.Button(
-            actions, text="停止" if self._autostart else "开始",
-            width=6, style="Primary.TButton", command=self._toggle_pause)
-        self._pause_btn.pack(side=tk.LEFT)
-        self._title_label = tk.Label(toolbar, text="工作台", font=font("h1", True),
+        self._title_label = tk.Label(toolbar, text="工作台", font=font("h1"),
                                      background=COLORS["canvas"], foreground=COLORS["ink"])
-        self._title_label.pack(side=tk.LEFT, padx=px(22), pady=px(14))
-        tk.Frame(self._content, height=1, background=COLORS["hairline"]).pack(fill=tk.X)
+        self._title_label.pack(side=tk.LEFT, padx=px(28), pady=px(20))
 
     def _create_navigation(self):
         self._sidebar = tk.Frame(self._shell, background=COLORS["sidebar"])
         self._brand = tk.Frame(self._sidebar, background=COLORS["sidebar"])
-        self._brand_icon = ui_icon(self.root, "conversation", 32, tile=True)
+        self._brand.pack(fill=tk.X, padx=px(18), pady=(px(23), px(28)))
+        self._brand_icon = ui_icon(self.root, "conversation", 24)
         tk.Label(self._brand, image=self._brand_icon, background=COLORS["sidebar"]).pack(
             side=tk.LEFT, padx=(0, px(8)))
-        tk.Label(self._brand, text="企业微信客服", font=font("h3", True),
+        tk.Label(self._brand, text="智能客服", font=font("h3", True),
                  background=COLORS["sidebar"], foreground=COLORS["ink"]).pack(side=tk.LEFT)
+        # Pack bottom controls first so navigation never pushes them off screen.
+        self._sidebar_bottom = tk.Frame(self._sidebar, background=COLORS["sidebar"])
+        self._sidebar_bottom.pack(side=tk.BOTTOM, fill=tk.X, padx=px(12), pady=px(16))
+        self._status_label = tk.Label(
+            self._sidebar_bottom, text="状态：运行中" if self._autostart else "状态：未启动",
+            font=font("small"), background=COLORS["sidebar"], foreground=COLORS["ink_mute"])
+        self._status_label.pack(anchor="w", padx=px(10), pady=(0, px(10)))
+        self._run_icons = {name: ui_icon(self.root, name, color=COLORS["on_primary"])
+                           for name in ("play", "stop")}
+        self._pause_btn = ttk.Button(
+            self._sidebar_bottom, text="停止" if self._autostart else "开始",
+            image=self._run_icons["stop" if self._autostart else "play"], compound="left",
+            style="Primary.TButton", command=self._toggle_pause)
+        self._pause_btn.pack(fill=tk.X, pady=(0, px(12)))
+        self._settings_icon = ui_icon(self.root, "settings")
+        self._settings_btn = ttk.Button(
+            self._sidebar_bottom, text="设置", image=self._settings_icon, compound="left",
+            style="Page.TButton", command=self._on_settings_clicked)
+        self._settings_btn.pack(fill=tk.X)
+        tk.Label(self._sidebar_bottom, text=f"v{APP_VERSION}", font=font("micro"),
+                 background=COLORS["sidebar"], foreground=COLORS["ink_faint"]).pack(
+                     anchor="w", padx=px(12), pady=(px(10), 0))
         self._navigation = {}
         self._navigation_icons = {}
         for name, glyph in (("工作台", "inbox"), ("数据", "chart"), ("知识库", "book")):
@@ -341,6 +338,7 @@ class MainWindow:
                 self._sidebar, text=f"  {name}", image=icon, compound="left",
                 style="PageOn.TButton" if name == "工作台" else "Page.TButton",
                 command=lambda page=name: self._show_page(page))
+            self._navigation[name].pack(fill=tk.X, padx=px(12), pady=(0, px(4)))
 
     def _show_page(self, name):
         if name == self._current_page:
@@ -381,8 +379,7 @@ class MainWindow:
                                 wraplength=px(600),
                                 font=font("small"), foreground=COLORS["warning"],
                                 background=COLORS["warning_bg"],
-                                padx=SPACE["md"], pady=SPACE["sm"])
-        self._banner.pack(fill=tk.X, padx=px(22), pady=(px(12), 0))
+                                padx=px(12), pady=px(10))
 
     def set_banner(self, text: str, level: str = "warn"):
         """更新横幅。level: warn=黄 / error=红 / ok=绿（空文本＝隐藏）。"""
@@ -390,15 +387,19 @@ class MainWindow:
             "warn": (COLORS["warning_bg"], COLORS["warning"]),
             "error": (COLORS["danger_bg"], COLORS["danger"]),
             "ok": (COLORS["success_bg"], COLORS["success"]),
+            "info": (COLORS["sidebar"], COLORS["ink_mute"]),
         }
+        # Being idle is normal, not a warning. Keep actual fault messages coloured.
+        if level == "warn" and text.startswith("未启动"):
+            level = "info"
         bg, fg = colors.get(level, colors["warn"])
         try:
             if not text:
                 self._banner.pack_forget()
                 return
             self._banner.config(text=text, background=bg, foreground=fg)
-            self._banner.pack(fill=tk.X, before=self._footer, padx=px(22),
-                              pady=(px(12), 0))
+            self._banner.pack(fill=tk.X, before=self._footer, padx=px(28),
+                              pady=(0, px(4)))
         except Exception:
             pass
 
@@ -407,32 +408,19 @@ class MainWindow:
         status_frame = tk.Frame(parent, background=COLORS["canvas"])
         status_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=SPACE["md"], pady=SPACE["xs"])
 
-        self._status_label = tk.Label(
-            status_frame, text="状态：运行中" if self._autostart else "状态：未启动",
-            font=font("small", True), background=COLORS["canvas"],
-            foreground=COLORS["ink_secondary"])
-        self._status_label.pack(side=tk.LEFT)
-
-        tk.Frame(status_frame, width=1, height=14,
-                 background=COLORS["hairline"]).pack(side=tk.LEFT, fill=tk.Y,
-                                                     padx=SPACE["md"])
-
         self._stats_label = tk.Label(
             status_frame, text="已回复 0　待人工 0", font=font("small"),
             background=COLORS["canvas"], foreground=COLORS["ink_mute"])
         self._stats_label.pack(side=tk.LEFT)
-        tk.Label(status_frame, text=f"v{APP_VERSION}", font=font("small"),
-                 background=COLORS["canvas"], foreground=COLORS["ink_secondary"]
-                 ).pack(side=tk.RIGHT)
 
     def _create_tabs(self, parent):
         """创建标签页"""
         tab_frame = tk.Frame(parent, background=COLORS["canvas_soft"])
-        tab_frame.pack(fill=tk.BOTH, expand=True, padx=px(22), pady=px(14))
+        tab_frame.pack(fill=tk.BOTH, expand=True, padx=px(28), pady=px(18))
 
         # 标签栏
         tab_bar = tk.Frame(tab_frame, background=COLORS["canvas_soft"])
-        tab_bar.pack(fill=tk.X, pady=(0, SPACE["sm"]))
+        tab_bar.pack(fill=tk.X, pady=(0, px(16)))
 
         ttk.Button(tab_bar, text="清空记录", style="Danger.TButton",
                    command=self._clear_records).pack(side=tk.RIGHT)
@@ -480,8 +468,8 @@ class MainWindow:
         self._history_empty = self._empty_label(self._tree, "暂无已发送记录")
 
         self.root.after(120, self._fit_tree_columns)
-        self._tree.tag_configure("replied", foreground="green")
-        self._tree.tag_configure("escalated", foreground="red")
+        self._tree.tag_configure("replied", foreground=COLORS["ink_secondary"])
+        self._tree.tag_configure("escalated", foreground=COLORS["warning"])
 
         # ── 待人工列表（点「待人工」标签时显示）──────────────────────
         # 置信度不足的消息会进这里，附带 AI 推荐回复，可【发送】或【编辑】
@@ -527,9 +515,9 @@ class MainWindow:
 
     @staticmethod
     def _empty_label(tree, text):
-        icon = ui_icon(tree, "inbox", 36, tile=True)
+        icon = ui_icon(tree, "inbox", 40, color=COLORS["ink_mute"])
         label = tk.Label(tree, text=f"\n{text}", image=icon, compound="top",
-                         font=font("h3", True), background=COLORS["canvas"],
+                         font=font("body"), background=COLORS["canvas"],
                          foreground=COLORS["ink_mute"])
         label._icon = icon
         return label
@@ -604,6 +592,8 @@ class MainWindow:
                 self._refuse_start(why)
                 return
         self._paused = not self._paused
+        if hasattr(self, "_run_icons"):
+            self._pause_btn.configure(image=self._run_icons["play" if self._paused else "stop"])
         if self._paused:
             self._pause_btn.config(text="开始")
             self._status_label.config(text="状态：未启动")

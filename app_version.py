@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-APP_VERSION = "1.4.0-dev"
+APP_VERSION = "1.4.1-dev"
 BUILD_FILE = "wecom-build-id.txt"
 APP_DIR = Path(__file__).resolve().parent
 

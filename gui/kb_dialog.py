@@ -550,15 +550,15 @@ class KbDialog:
         # 单条操作：手动改资料全靠这一排
         ops = ttk.Frame(page)
         ops.pack(fill=tk.X, padx=10, pady=(0, 2))
-        ttk.Button(ops, text="新增一条…", style="SegmentOn.TButton",
+        ttk.Button(ops, text="新增条目", style="SegmentOn.TButton",
                    command=self._kb_add).pack(side=tk.LEFT)
-        ttk.Button(ops, text="编辑这条…", command=self._kb_edit).pack(side=tk.LEFT, padx=6)
-        ttk.Button(ops, text="看全文", command=self._kb_view).pack(side=tk.LEFT, padx=6)
-        ttk.Button(ops, text="撤销上次修改", command=self._kb_undo).pack(side=tk.LEFT, padx=6)
-        ttk.Button(ops, text="删除这条", style="Danger.TButton",
+        ttk.Button(ops, text="编辑", command=self._kb_edit).pack(side=tk.LEFT, padx=6)
+        ttk.Button(ops, text="查看全文", command=self._kb_view).pack(side=tk.LEFT, padx=6)
+        ttk.Button(ops, text="撤销修改", command=self._kb_undo).pack(side=tk.LEFT, padx=6)
+        ttk.Button(ops, text="删除", style="Danger.TButton",
                    command=self._kb_delete).pack(side=tk.LEFT, padx=6)
         # ★ 最常转人工的问题 = 资料库缺什么。放这里顺手就能补。
-        ttk.Button(ops, text="最常转人工的问题…", style="Ghost.TButton",
+        ttk.Button(ops, text="常见转人工问题", style="Ghost.TButton",
                    command=self._open_unanswered).pack(side=tk.RIGHT)
 
         # 问题和答案**必须分两列**：挤在一列里 Treeview 只显示第一行，

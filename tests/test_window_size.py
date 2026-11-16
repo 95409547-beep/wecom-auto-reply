@@ -37,7 +37,13 @@ def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
         window._after_resize()
         root.update_idletasks()
         assert window._compact_navigation
-        assert window._sidebar.grid_info()["columnspan"] == 2
+        assert window._sidebar.grid_info()["columnspan"] == 1
+        assert window._content.winfo_x() >= window._sidebar.winfo_width()
+        assert window._settings_btn.master is window._sidebar_bottom
+        assert window._pause_btn.master is window._sidebar_bottom
+        assert window._sidebar_bottom.winfo_y() > window._sidebar.winfo_height() / 2
+        assert window._pause_btn.winfo_viewable()
+        assert window._settings_btn.winfo_viewable()
         assert window._current_page == "工作台"
         assert set(window._page_frames) == {"工作台"}
 
@@ -53,6 +59,14 @@ def test_main_pages_share_one_window_and_keep_their_state(monkeypatch):
         kb = window._page_views["知识库"]
         assert kb.win.winfo_toplevel() is root
         assert kb._nb.tab(kb._nb.select(), "text") == "资料库"
+        # The persistent sidebar must leave all knowledge actions usable.
+        def check_buttons(widget):
+            for child in widget.winfo_children():
+                if child.winfo_viewable() and child.winfo_class() == "TButton":
+                    assert child.winfo_width() >= child.winfo_reqwidth() - 2, child.cget("text")
+                    assert child.winfo_rootx() + child.winfo_width() <= root.winfo_rootx() + root.winfo_width()
+                check_buttons(child)
+        check_buttons(kb.win)
         assert root.title().startswith("企业微信智能客服")
         assert root.grab_current() is None
         kb._kb_kw.insert(0, "测试搜索")
