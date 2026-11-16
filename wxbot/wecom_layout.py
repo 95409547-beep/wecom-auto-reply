@@ -110,4 +110,3 @@ def detect_wecom_layout(image: Image.Image):
     if not (nav < chat_left < ix0 < ix1 <= chat_right <= w):
         return None
     return WeComLayout(nav, chat_left, chat_right, header, int(top), int(bottom), scale)
-
