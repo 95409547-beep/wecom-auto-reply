@@ -41,6 +41,10 @@ def search(query_vector: list[float], client: QdrantClient,
            collection_name: str = COLLECTION_NAME,
            top_k: int = 5) -> list[ScoredPoint]:
     """Search Qdrant for the most relevant knowledge chunks."""
+    # A fresh local installation has no collection until the first upload.
+    # Treat that as no matching knowledge, so ordinary reply policy still runs.
+    if not client.collection_exists(collection_name):
+        return []
     return client.query_points(
         collection_name=collection_name,
         query=query_vector,
