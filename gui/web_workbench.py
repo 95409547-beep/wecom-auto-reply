@@ -235,17 +235,19 @@ class WindowAdapter:
             rows = [r.to_dict() for r in list(self.window._records)[-1000:][::-1]]
             current = archives.active_id()
             reviews = {row["id"]: row for row in reply_learning.reviews(current)}
+            by_record = {row["record"]: row for row in reviews.values() if row.get("record")}
             for row in rows:
                 row["learning"] = {"status": "unrecorded", "label": "尚无学习记录", "entries": []}
                 if row.get("archive") and row["archive"] != current:
                     row["learning"]["label"] = "其他档案，切换后查看"
-                review = reviews.get(reply_learning.reply_key(row.get("question", ""), row.get("reply", "")))
-                if row.get("archive") == current and review:
+                review = by_record.get(row.get("record_id")) or reviews.get(
+                    reply_learning.reply_key(row.get("question", ""), row.get("reply", "")))
+                if (not row.get("archive") or row["archive"] == current) and review:
                     row["learning"] = reply_learning.status(
                         current, row.get("question", ""), row.get("reply", ""),
                         getattr(services, "qdrant", None), review=review,
                     )
-            return {"rows": rows, "archive": current}
+            return {"rows": rows, "archive": current, "archiveName": archives.active_name()}
         services = getattr(self.window, "web_services", None)
         if services is None:
             raise ValueError("页面服务尚未准备好，请等待程序完成启动。")

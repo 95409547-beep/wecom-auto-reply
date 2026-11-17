@@ -228,13 +228,16 @@ class WebServices:
                 from gui.main_window import load_reply_history
                 record = next((r for r in load_reply_history(limit=5000)
                                if r.record_id == p.get("record")), None)
-                if record is None or record.archive != archives.active_id():
-                    raise ValueError("找不到这条已发送记录，旧记录可以在资料库里手动新增问答。")
+                if record is None or (record.archive and record.archive != archives.active_id()):
+                    raise ValueError("找不到当前档案的已发送记录，请刷新后重试。")
+                question = str(p.get("question") or record.question).strip()
+                if not question or len(question) > 2000:
+                    raise ValueError("这条旧记录未保存客户原话，请先补充完整问题。")
                 row = reply_learning.prepare(
-                    record.question, record.reply, record.draft, archive=record.archive,
+                    question, record.reply, record.draft, archive=archives.active_id(),
                     cfg={**self.cfg, "kb": {**self.cfg.get("kb", {}),
                          "learn": {**self.cfg.get("kb", {}).get("learn", {}), "enabled": True}}},
-                    direct=record.source != "human_edit",
+                    direct=record.source != "human_edit", record=record.record_id,
                 )
             elif action == "reply.commit":
                 row = reply_learning.commit(archives.active_id(), str(p.get("id", "")),

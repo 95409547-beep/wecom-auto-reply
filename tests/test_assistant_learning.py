@@ -184,3 +184,23 @@ def test_undo_duplicate_add_cannot_delete_existing_knowledge(library):
     with pytest.raises(ValueError, match="沿用已有"):
         library.assistant.undo(plan["id"])
     assert kb_tools.get_entry(library.qdrant, before["id"])["source"] == "原始资料"
+
+
+def test_legacy_sent_record_can_be_learned_after_backfilling_question(library, monkeypatch):
+    from gui import main_window
+    from gui.web_workbench import WindowAdapter
+    from rag import archives
+    old = main_window.MessageRecord(
+        "11-16 12:00", "历史测试会话", "进入设置兑换 CDK", "replied", "进入设置兑换 CDK",
+        record_id="legacy-record",
+    )
+    monkeypatch.setattr(main_window, "load_reply_history", lambda **kwargs: [old])
+    archive = archives.active_id()
+    row = library.command("reply.prepare", {
+        "archive": archive, "record": old.record_id, "question": "天仙月礼包码在哪兑换",
+    })["review"]
+    assert row["record"] == "legacy-record"
+    library.command("reply.commit", {"archive": archive, "id": row["id"], "keys": ["reply"]})
+    adapter = WindowAdapter(SimpleNamespace(_records=[old], web_services=library))
+    receipt = adapter.resources("records", {})["rows"][0]["learning"]
+    assert receipt["label"] == "已加入资料库"

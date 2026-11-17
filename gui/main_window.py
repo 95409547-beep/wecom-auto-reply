@@ -12,6 +12,7 @@
 """
 
 import csv
+import hashlib
 import ctypes
 import logging
 import os
@@ -106,7 +107,7 @@ def load_reply_history(path=None, limit: int = 500) -> List["MessageRecord"]:
         out.append(MessageRecord(
             hhmm, row.get("customer_name") or "客户", sent, action, sent,
             question=row.get("learning_question") or row.get("customer_message", ""),
-            record_id=row.get("record_id", ""),
+            record_id=row.get("record_id") or hashlib.sha256(line.encode()).hexdigest()[:24],
             archive=row.get("archive", ""), source=row.get("source", ""),
             draft=row.get("draft", ""),
         ))

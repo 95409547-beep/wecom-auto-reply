@@ -49,7 +49,7 @@ def save(archive: str, row: dict) -> dict:
 
 
 def prepare(question: str, answer: str, draft: str = "", *, archive: str,
-            cfg: dict, direct: bool = False) -> dict:
+            cfg: dict, direct: bool = False, record: str = "") -> dict:
     from rag.learn import propose
 
     key = reply_key(question, answer)
@@ -57,7 +57,8 @@ def prepare(question: str, answer: str, draft: str = "", *, archive: str,
     if previous and previous["status"] in ("ready", "learned"):
         return previous
     row = {"id": key, "archive": archive, "question": question, "answer": answer,
-           "draft": draft, "status": "analyzing", "entries": [], "result": {}}
+           "draft": draft, "status": "analyzing", "entries": [], "result": {},
+           "record": record}
     save(archive, row)
     if not learn_store.enabled(cfg):
         return save(archive, {**row, "status": "disabled", "reason": "学习功能已关闭"})

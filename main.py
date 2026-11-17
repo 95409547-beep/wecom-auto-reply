@@ -517,6 +517,7 @@ def _main_impl():
                         draft=log_ctx.get("draft", "")))
                 # ★ 学习挂在"真的发出去"之后：没发出去的话不该被学走
                 if learn_ctx:
+                    learn_ctx["record"] = record_id
                     if learn_ctx.get("direct_confirm"):
                         _record_direct_confirm(learn_ctx, reply_text)
                     else:
@@ -598,6 +599,7 @@ def _main_impl():
                 reply_learning.prepare(
                     ctx.get("question", ""), sent_text, ctx.get("draft", ""),
                     archive=archive_id, cfg=cfg, direct=direct,
+                    record=ctx.get("record", ""),
                 )
             except Exception:
                 log.exception("回复学习分析失败，可从已回复记录重试")
