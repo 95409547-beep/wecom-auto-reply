@@ -774,6 +774,6 @@ export function PageRouter(props) {
   useEffect(() => setVisited(old => old.includes(props.page) ? old : [...old, props.page]), [props.page]);
   return <section className="page-area" hidden={props.page === 'pending'}><div className="page-topline"><BookOpen size={18} /><span>{names[props.page]}</span><span className="page-local">本机工作区</span></div>{props.demo && <div className="preview-note">演示模式 · 示例数据不会写入真实配置或资料库</div>}{props.connectionError && <div className="notice error">{props.connectionError}</div>}<div className="page-content">{visited.map(page => {
         const Component = components[page];
-        return Component && <div key={page} hidden={props.page !== page} className="page-view"><PageBoundary title={names[page]}><Component {...props} page={page} active={props.page === page} /></PageBoundary></div>;
+        return Component && <div key={page} hidden={props.page !== page} className={page === 'assistant' ? 'page-view assistant-view' : 'page-view'}><PageBoundary title={names[page]}><Component {...props} page={page} active={props.page === page} /></PageBoundary></div>;
       })}</div></section>;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Robot, PaperPlaneTilt, X, CheckCircle, ArrowSquareOut } from '@phosphor-icons/react';
 import './assistant.css';
 
@@ -50,12 +50,12 @@ export function AssistantPage({ api, run, busy, active }) {
   const [conversation, setConversation] = useState('');
   const [connection, setConnection] = useState(null);
   const [showConnection, setShowConnection] = useState(false);
-  const end = useRef(null);
+  const history = useRef(null);
   useEffect(() => { if (active) api('resource?name=assistant').then(setConnection).catch(() => {}); }, [active, api]);
-  useEffect(() => {
-    // Some WebView versions return a promise. Effects may only return a cleanup function.
-    end.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [messages]);
+  useLayoutEffect(() => {
+    if (!active || !history.current) return;
+    history.current.scrollTop = history.current.scrollHeight;
+  }, [active, messages, busy, showConnection]);
   async function send(event) {
     event.preventDefault();
     const content = text.trim();
@@ -81,14 +81,61 @@ export function AssistantPage({ api, run, busy, active }) {
     })));
   }
   return <div className="assistant-page">
-    <div className="page-header"><div><h1>AI 助手</h1><p>查询设置、调整话术、维护资料，修改前先查看预览。</p></div><button className="button secondary" onClick={() => setShowConnection(!showConnection)}><ArrowSquareOut size={17}/>外部 AI 接入</button></div>
-    {showConnection && <section className="assistant-connection"><h2>MCP 连接配置</h2><p>保持软件运行，在支持 MCP 的 AI 工具中添加以下配置。</p><pre className="prose">{JSON.stringify({ mcpServers: { wecom: connection?.mcp } }, null, 2)}</pre></section>}
-    <div className="assistant-messages" aria-live="polite">
-      {!messages.length && <div className="assistant-empty"><Robot size={32}/><h2>想调整哪一部分？</h2><div className="assistant-examples">{['查看当前模型和学习开关', '把欢迎语改得简短自然一些', '查一下天仙月礼包码怎么兑换'].map(example => <button key={example} className="button secondary" onClick={() => setText(example)}>{example}</button>)}</div></div>}
-      {messages.map((message, i) => <article className={'assistant-message ' + message.role} key={i}><strong>{message.role === 'user' ? '你' : 'AI 助手'}</strong><p>{message.text}</p>{message.changes?.map(change => <section className="assistant-change" key={change.id}><h3>变更预览 · {change.action}</h3><div className="change-columns"><div><h4>当前内容</h4><pre className="prose">{typeof change.before === 'string' ? change.before : JSON.stringify(change.before, null, 2)}</pre></div><div><h4>修改后</h4><pre className="prose">{JSON.stringify(change.after, null, 2)}</pre></div></div>{change.status === 'pending' ? <div className="row-actions"><button className="button secondary" disabled={busy} onClick={() => apply(change, true)}>取消</button><button className="button primary" disabled={busy} onClick={() => apply(change)}>应用变更</button></div> : <p className="muted"><CheckCircle size={16}/> {change.status === 'applied' ? change.receipt || '已应用' : change.status === 'undone' ? '已撤销' : '已取消'}</p>}{change.status === 'applied' && change.undoable && <button className="button secondary" disabled={busy} onClick={() => apply(change, false, true)}>撤销这次变更</button>}</section>)}</article>)}
-      {busy && <p className="muted" role="status">正在处理，请稍候…</p>}
-      <div ref={end}/>
+    <div className="assistant-top">
+      <div className="page-header">
+        <div><h1>AI 助手</h1><p>查询设置、调整话术、维护资料，修改前先查看预览。</p></div>
+        <button className="button secondary" aria-expanded={showConnection} aria-controls="assistant-connection" onClick={() => setShowConnection(!showConnection)}>
+          <ArrowSquareOut size={17}/>外部 AI 接入
+        </button>
+      </div>
+      <section id="assistant-connection" className="assistant-connection" hidden={!showConnection}>
+        <h2>MCP 连接配置</h2>
+        <p>保持软件运行，在支持 MCP 的 AI 工具中添加以下配置。</p>
+        <pre className="prose">{JSON.stringify({ mcpServers: { wecom: connection?.mcp } }, null, 2)}</pre>
+      </section>
     </div>
-    <form className="assistant-composer" onSubmit={send}><label className="sr-only" htmlFor="assistant-input">给 AI 助手的指令</label><textarea id="assistant-input" value={text} maxLength={6000} disabled={busy} placeholder="输入你想查询或修改的内容…" onChange={e => setText(e.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) send(event); }}/><div><span className="muted">Ctrl + Enter 发送</span><button className="button primary" disabled={busy || !text.trim()}><PaperPlaneTilt size={18}/>发送</button></div></form>
+    <section className="assistant-messages" aria-label="助手对话记录" aria-live="polite" tabIndex={0} ref={history}>
+      <div className="assistant-thread">
+        {!messages.length && <div className="assistant-empty">
+          <Robot size={32}/>
+          <h2>想调整哪一部分？</h2>
+          <div className="assistant-examples">
+            {['查看当前模型和学习开关', '把欢迎语改得简短自然一些', '查一下天仙月礼包码怎么兑换'].map(example => (
+              <button key={example} className="button secondary" onClick={() => setText(example)}>{example}</button>
+            ))}
+          </div>
+        </div>}
+        {messages.map((message, i) => <article className={'assistant-message ' + message.role} key={i}>
+          <strong>{message.role === 'user' ? '你' : 'AI 助手'}</strong>
+          <p>{message.text}</p>
+          {message.changes?.map(change => <section className="assistant-change" key={change.id}>
+            <h3>变更预览 · {change.action}</h3>
+            <div className="change-columns">
+              <div><h4>当前内容</h4><pre className="prose">{typeof change.before === 'string' ? change.before : JSON.stringify(change.before, null, 2)}</pre></div>
+              <div><h4>修改后</h4><pre className="prose">{JSON.stringify(change.after, null, 2)}</pre></div>
+            </div>
+            {change.status === 'pending' ? <div className="row-actions">
+              <button className="button secondary" disabled={busy} onClick={() => apply(change, true)}>取消</button>
+              <button className="button primary" disabled={busy} onClick={() => apply(change)}>应用变更</button>
+            </div> : <p className="muted"><CheckCircle size={16}/> {change.status === 'applied' ? change.receipt || '已应用' : change.status === 'undone' ? '已撤销' : '已取消'}</p>}
+            {change.status === 'applied' && change.undoable && <button className="button secondary" disabled={busy} onClick={() => apply(change, false, true)}>撤销这次变更</button>}
+          </section>)}
+        </article>)}
+        {busy && <p className="assistant-working muted" role="status">正在处理，请稍候…</p>}
+      </div>
+    </section>
+    <form className="assistant-composer" onSubmit={send}>
+      <label className="sr-only" htmlFor="assistant-input">给 AI 助手的指令</label>
+      <textarea id="assistant-input" value={text} maxLength={6000} disabled={busy} placeholder="输入你想查询或修改的内容…"
+        onChange={event => setText(event.target.value)}
+        onKeyDown={event => {
+          if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) send(event);
+        }}
+      />
+      <div className="assistant-composer-actions">
+        <span className="muted"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 发送</span>
+        <button type="submit" className="button primary" disabled={busy || !text.trim()}><PaperPlaneTilt size={18}/>发送</button>
+      </div>
+    </form>
   </div>;
 }
