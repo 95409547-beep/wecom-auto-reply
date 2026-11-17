@@ -23,6 +23,8 @@ class WebServices:
         self.qdrant = qdrant
         self.lock = threading.RLock()
         self.plans = {}
+        from rag.assistant import Assistant
+        self.assistant = Assistant(self)
 
     def _client(self):
         if self.qdrant is None:
@@ -35,6 +37,28 @@ class WebServices:
 
     def _read(self, name, params):
         from rag import archives
+        if name == "learning":
+            from rag.reply_learning import reviews
+            from rag.reply_learning import status
+            rows = reviews(archives.active_id())
+            for row in rows:
+                row["receipt"] = status(
+                    archives.active_id(), row["question"], row["answer"], self.qdrant, review=row,
+                )
+            return {"archive": archives.active_id(), "reviews": rows}
+        if name == "assistant":
+            from rag.assistant import TOOLS
+            from app_paths import app_dir
+            runtime = app_dir() / "_internal/python/python.exe"
+            if not runtime.is_file():
+                import sys
+                runtime = Path(sys.executable)
+            return {"archive": archives.active_id(), "tools": TOOLS,
+                    "mcp": {"command": str(runtime),
+                            "args": [str(app_dir() / "scripts/assistant_mcp.py")]}}
+        if name == "ima":
+            from rag.ima_kb import read_settings
+            return read_settings()
         if name == "settings":
             from config import settings_store as store
             from rag.llm_client import PRESETS, DEFAULT_BASE_URL, DEFAULT_MODEL
@@ -96,11 +120,29 @@ class WebServices:
             from rag.learn import learned_block
             rows = [{**r, "kind": ls.STYLE_RULES, "text": r.get("rule", ""), "label": "语气规则"} for r in ls.style_rules()]
             rows += [{**r, "kind": ls.TONE_SAMPLES, "label": "口吻样本"} for r in ls.tone_samples()]
-            return {**common, "rows": rows, "facts": ls.facts("pending"), "counts": ls.counts(),
+            return {**common, "rows": rows, "facts": ls.facts("pending"),
+                    "factHistory": ls.facts("accepted") + ls.facts("rejected"), "counts": ls.counts(),
                     "enabled": ls.enabled(self.cfg), "preview": learned_block(self.cfg)}
         if name == "probe":
             return common
         raise ValueError("页面不存在")
+
+    def preview_reply(self, payload):
+        from rag import kb_tools
+        from rag.generator import generate_reply
+        question = str(payload.get("question", "")).strip()
+        if not question or len(question) > 6000:
+            raise ValueError("请输入要测试的问题，最多 6000 字。")
+        history = payload.get("history") or []
+        if not isinstance(history, list) or len(history) > 12:
+            raise ValueError("最多提供 12 条上下文消息。")
+        if any(not isinstance(h, dict) or h.get("role") not in ("customer", "assistant")
+               or not isinstance(h.get("text"), str) or len(h["text"]) > 6000 for h in history):
+            raise ValueError("上下文格式无效。")
+        from rag.game_scope import retrieval_question
+        hits = kb_tools.probe(self._client(), retrieval_question(question, history), top_k=12)
+        reply = asyncio.run(generate_reply(question, [h["text"] for h in hits], history=history))
+        return {"reply": reply, "hits": hits, "message": "已生成测试回复"}
 
     def _settings_values(self, payload):
         from config import settings_store as store
@@ -119,10 +161,23 @@ class WebServices:
         return values
 
     def command(self, action, payload):
+        if action == "assistant.chat":
+            return self.assistant.chat(payload.get("text", ""), payload.get("conversation", ""))
         with self.lock:
             return self._command(action, payload)
 
     def _command(self, action, p):
+        if action == "assistant.tool":
+            return self.assistant.tool(str(p.get("tool", "")), p.get("arguments", {}))
+        if action == "assistant.apply":
+            return self.assistant.apply(str(p.get("id", "")))
+        if action == "assistant.undo":
+            return self.assistant.undo(str(p.get("id", "")))
+        if action == "assistant.cancel":
+            plan = self.assistant.changes.get(p.get("id"))
+            if plan and plan["status"] == "pending":
+                plan["status"] = "cancelled"
+            return {"message": "已取消变更"}
         if action.startswith("settings."):
             from config import settings_store as store
             from rag import llm_client
@@ -167,6 +222,55 @@ class WebServices:
         if p.get("archive") != archives.active_id():
             raise ValueError("当前资料库档案已切换，请刷新页面后重试。")
         collection = archives.active_collection()
+        if action in ("reply.prepare", "reply.commit", "reply.decline"):
+            from rag import reply_learning
+            if action == "reply.prepare":
+                from gui.main_window import load_reply_history
+                record = next((r for r in load_reply_history(limit=5000)
+                               if r.record_id == p.get("record")), None)
+                if record is None or record.archive != archives.active_id():
+                    raise ValueError("找不到这条已发送记录，旧记录可以在资料库里手动新增问答。")
+                row = reply_learning.prepare(
+                    record.question, record.reply, record.draft, archive=record.archive,
+                    cfg={**self.cfg, "kb": {**self.cfg.get("kb", {}),
+                         "learn": {**self.cfg.get("kb", {}).get("learn", {}), "enabled": True}}},
+                    direct=record.source != "human_edit",
+                )
+            elif action == "reply.commit":
+                row = reply_learning.commit(archives.active_id(), str(p.get("id", "")),
+                                             p.get("keys", []), self.cfg, self._client())
+            else:
+                row = reply_learning.get(archives.active_id(), str(p.get("id", "")))
+                if row is None:
+                    raise ValueError("学习记录不存在。")
+                row = reply_learning.save(archives.active_id(), {**row, "status": "declined"})
+            return {"review": row, "message": "学习内容已更新"}
+        if action == "probe.preview":
+            return self.preview_reply(p)
+        if action == "review.import":
+            rows = p.get("items")
+            if not isinstance(rows, list) or not 1 <= len(rows) <= 1000:
+                raise ValueError("请选择包含 1–1000 条复核资料的 JSON 文件。")
+            for row in rows:
+                if not isinstance(row, dict) or any(not isinstance(row.get(k), str)
+                        for k in ("game", "question", "claim", "reason", "needed", "source_lines")):
+                    raise ValueError("复核文件字段不完整，请使用导出的正式复核文件。")
+                if any(len(value) > 5000 for value in row.values() if isinstance(value, str)):
+                    raise ValueError("单条复核资料过长，请按问题拆分。")
+            for row in rows:
+                ls.add_fact(
+                    row["game"] + "：" + row["question"], row["game"] + "：" + row["claim"],
+                    cfg={**self.cfg, "kb": {"learn": {"max_items": 500}}},
+                    source="历史聊天复核",
+                    review={key: row[key] for key in ("reason", "needed", "source_lines")},
+                )
+            return {"message": f"已导入 {len(rows)} 条复核资料，确认后可采纳入库"}
+        if action == "kb.ima_save":
+            from rag.ima_kb import save_settings
+            return {**save_settings(p), "message": "ima 配置已保存"}
+        if action == "kb.ima_saved_sync":
+            from rag.ima_kb import sync_saved
+            return sync_saved(self._client())
         if action in ("unanswered.done", "unanswered.clear"):
             from rag import unanswered
             if action.endswith("clear"):
@@ -238,9 +342,16 @@ class WebServices:
             if not fact:
                 raise ValueError("这条事实已处理")
             if action.endswith("accept"):
-                result = kb_tools.add_entry(self._client(), fact.get("question", ""), fact.get("claim", ""), source="人工改稿学到", collection=collection)
+                question = str(p.get("question", fact.get("question", ""))).strip()
+                answer = str(p.get("answer", fact.get("claim", ""))).strip()
+                if not question or not answer or len(question) > 2000 or len(answer) > 10000:
+                    raise ValueError("请填写完整问题和已核实的答案。")
+                result = kb_tools.add_entry(self._client(), question, answer, source="人工改稿学到", collection=collection)
                 kb_history.record(result["id"], "", "人工改稿学到", reason="学到的说法入库")
-            ls.set_fact_status(fact["id"], "accepted" if action.endswith("accept") else "rejected")
+            ls.set_fact_status(fact["id"], "accepted" if action.endswith("accept") else "rejected",
+                               entry_id=result["id"] if action.endswith("accept") else "",
+                               published={"question": question, "answer": answer}
+                               if action.endswith("accept") else None)
             return {"message": "已采纳并加入资料库" if action.endswith("accept") else "已拒绝这条事实"}
         if action == "probe.run":
             from rag.guard import high_threshold
@@ -289,14 +400,17 @@ class WebServices:
             ensure_collection(client, collection)
             result = import_files([str(f) for f in files], client, collection)
             return {"message": f"重建完成：{len(result['ok'])} 个文件，{result['chunks']} 块", "importResult": result}
-        if action in ("kb.ima_test", "kb.ima_sync"):
+        if action in ("kb.ima_test", "kb.ima_sync", "kb.ima_bases"):
             import httpx
             from rag.ima_kb import ImaKnowledge, credentials, knowledge_base_id, sync_to_archive
 
-            wiki_id = knowledge_base_id(str(p.get("wiki", "")))
             client_id, api_key = credentials(str(p.get("clientId", "")), str(p.get("apiKey", "")))
             with httpx.Client(timeout=12) as http:
                 ima = ImaKnowledge(http, client_id, api_key)
+                if action == "kb.ima_bases":
+                    return {"bases": ima.bases(str(p.get("query", ""))),
+                            "message": "已读取可访问的 ima 知识库"}
+                wiki_id = knowledge_base_id(str(p.get("wiki", "")))
                 title, items = ima.inventory(wiki_id)
                 if action == "kb.ima_test":
                     return {"title": title, "total": len(items),

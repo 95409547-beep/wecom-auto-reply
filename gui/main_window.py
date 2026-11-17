@@ -92,7 +92,7 @@ def load_reply_history(path=None, limit: int = 500) -> List["MessageRecord"]:
             continue
         if "sent" in row and row["sent"] is not True:
             continue
-        sent = (row.get("ai_reply") or "").strip()
+        sent = (row.get("learning_answer") or row.get("ai_reply") or "").strip()
         if not sent:
             continue                      # 没发出去的不算"已回复"
         ts = str(row.get("timestamp") or "")
@@ -103,8 +103,13 @@ def load_reply_history(path=None, limit: int = 500) -> List["MessageRecord"]:
         action = "hold" if "占位" in str(row.get("guard_reason") or "") else "replied"
         if level == "no_reply":
             continue
-        out.append(MessageRecord(hhmm, row.get("customer_name") or "客户",
-                                 sent, action, sent))
+        out.append(MessageRecord(
+            hhmm, row.get("customer_name") or "客户", sent, action, sent,
+            question=row.get("learning_question") or row.get("customer_message", ""),
+            record_id=row.get("record_id", ""),
+            archive=row.get("archive", ""), source=row.get("source", ""),
+            draft=row.get("draft", ""),
+        ))
     return out
 
 
@@ -112,12 +117,18 @@ class MessageRecord:
     """消息记录"""
 
     def __init__(self, timestamp: str, customer: str, message: str,
-                 action: str, reply: str = ""):
+                 action: str, reply: str = "", *, question: str = "",
+                 record_id: str = "", archive: str = "", source: str = "", draft: str = ""):
         self.timestamp = timestamp
         self.customer = customer
         self.message = message
         self.action = action
         self.reply = reply
+        self.question = question
+        self.record_id = record_id
+        self.archive = archive
+        self.source = source
+        self.draft = draft
 
     def to_dict(self) -> Dict:
         return {
@@ -126,6 +137,11 @@ class MessageRecord:
             "message": self.message,
             "action": self.action,
             "reply": self.reply,
+            "question": self.question,
+            "record_id": self.record_id,
+            "archive": self.archive,
+            "source": self.source,
+            "draft": self.draft,
         }
 
 
@@ -884,11 +900,11 @@ class MainWindow:
     # ═══ 公开接口 ═══════════════════════════
 
     def add_record(self, customer: str, message: str, action: str,
-                   reply: str = ""):
+                   reply: str = "", **metadata):
         """添加消息记录"""
         # 带日期：这一页是"它替我发了什么"的流水账，跨天只写 HH:MM 分不清是哪天
         timestamp = datetime.now().strftime("%m-%d %H:%M")
-        record = MessageRecord(timestamp, customer, message, action, reply)
+        record = MessageRecord(timestamp, customer, message, action, reply, **metadata)
         self._records.append(record)
 
         # 更新统计

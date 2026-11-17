@@ -22,6 +22,7 @@
 import os
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, Tuple
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
@@ -95,12 +96,28 @@ def get_client() -> AsyncOpenAI:
             "还没填 LLM 接口密钥。请点界面上的「设置」填入，"
             "或手工在 .env 里加一行 LLM_API_KEY=你的密钥"
         )
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        return AsyncOpenAI(api_key=key, base_url=base, timeout=60.0)
     sig = (key, base)
     if _client is None or _client_sig != sig:
         # 密钥/地址变了必须重建 client，否则改完设置还在用旧连接
         _client = AsyncOpenAI(api_key=key, base_url=base, timeout=60.0)
         _client_sig = sig
     return _client
+
+
+@asynccontextmanager
+async def client_context():
+    client = get_client()
+    try:
+        yield client
+    finally:
+        if isinstance(client, AsyncOpenAI):
+            await client.close()
 
 
 def reset_client():
@@ -157,36 +174,35 @@ async def chat(messages: list[dict], temperature: float = 0.7,
     Raises:
         RuntimeError: 重试用尽，或遇到不可重试的 4xx。
     """
-    client = get_client()
-    _, _, cfg_model = resolve_config()
-    use_model = model or cfg_model
-    last_error = None
+    async with client_context() as client:
+        _, _, cfg_model = resolve_config()
+        use_model = model or cfg_model
+        last_error = None
 
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = await client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            last_error = e
-            status = getattr(e, 'status_code', None)
-            if status is not None and 400 <= status < 500 and status != 429:
-                logger.error(f"LLM 接口不可重试错误 {status}（模型={use_model}）: {e}")
-                raise RuntimeError(f"LLM API error {status}（模型={use_model}）: {e}") from e
-            logger.warning(
-                f"LLM 尝试 {attempt + 1}/{MAX_RETRIES + 1} 失败（模型={use_model}）: {e}"
-            )
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(1.0 * (attempt + 1))
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=use_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_error = e
+                status = getattr(e, 'status_code', None)
+                if status is not None and 400 <= status < 500 and status != 429:
+                    logger.error(f"LLM 接口不可重试错误 {status}（模型={use_model}）: {e}")
+                    raise RuntimeError(f"LLM API error {status}（模型={use_model}）: {e}") from e
+                logger.warning(
+                    f"LLM 尝试 {attempt + 1}/{MAX_RETRIES + 1} 失败（模型={use_model}）: {e}"
+                )
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(1.0 * (attempt + 1))
 
-    raise RuntimeError(
-        f"LLM 接口连续 {MAX_RETRIES + 1} 次失败（模型={use_model}）: {last_error}"
-    )
-
+        raise RuntimeError(
+            f"LLM 接口连续 {MAX_RETRIES + 1} 次失败（模型={use_model}）: {last_error}"
+        )
 
 async def ping(timeout: float = 25.0, *,
                settings: Optional[Tuple[str, str, str]] = None) -> Tuple[bool, str]:

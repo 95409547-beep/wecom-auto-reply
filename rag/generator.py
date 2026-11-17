@@ -224,7 +224,16 @@ async def generate_reply(
     history: Optional[list[dict]] = None,
 ) -> str:
     """Generate a reply using DeepSeek with knowledge context and history."""
+    from rag.game_scope import ASK_GAME_VARIANTS, scope_chunks
+    context_chunks, needs_game = scope_chunks(question, context_chunks, history)
+    if needs_game:
+        return random.choice(ASK_GAME_VARIANTS)
     messages = build_prompt(question, context_chunks, history=history)
+    if any("适用项目：" in chunk for chunk in context_chunks):
+        messages[0]["content"] += (
+            "\n\n客服正文通常写 1–2 句，直接回答当前问题。"
+            "保留实际操作步骤和版本、区服、渠道等必要条件。"
+        )
     return await _generate_with_variation(messages, "reply", 512, history)
 
 

@@ -1,8 +1,10 @@
+import { AssistantPage, ReplyReview } from './Assistant';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowClockwise, DownloadSimple, Plus, MagnifyingGlass, X, BookOpen, FileText, UploadSimple, PencilSimple, Trash, ArrowCounterClockwise, CaretLeft, CaretRight, WarningCircle, ChartBar, Robot, GearSix, CheckCircle, FloppyDisk, Eye, Play } from '@phosphor-icons/react';
 export const FeedbackContext = createContext(null);
 
 const names = {
+  assistant: 'AI 助手',
   all: '全部消息',
   replied: '已回复',
   dashboard: '数据看板',
@@ -151,6 +153,7 @@ function Pagination({
   return <div className="pagination"><span>共 {total} 条 · 第 {page + 1} / {Math.max(1, Math.ceil(total / size))} 页</span><B icon={CaretLeft} aria-label="上一页" disabled={page === 0} onClick={() => onPage(page - 1)} /><B icon={CaretRight} aria-label="下一页" disabled={(page + 1) * size >= total} onClick={() => onPage(page + 1)} /></div>;
 }
 function History({
+  navigate,
   page,
   api,
   run,
@@ -162,11 +165,18 @@ function History({
     [status, setStatus] = useState('all'),
     [index, setIndex] = useState(0),
     [selected, setSelected] = useState(null),
-    [clear, setClear] = useState(false);
-  const rows = (r.data?.rows || []).filter(row => (page !== 'replied' || outgoing.has(row.action)) && (status === 'all' || row.action === status) && [row.customer, row.message, row.reply].join(' ').includes(q));
+    [clear, setClear] = useState(false),
+    [review, setReview] = useState(null);
+  const rows = (r.data?.rows || []).filter(row => (page !== 'replied' || outgoing.has(row.action)) && (status === 'all' || row.action === status) && [row.customer, row.question, row.message, row.reply].join(' ').includes(q));
   useEffect(() => setIndex(0), [q, status, page]);
   useEffect(() => { if (!active) return; const timer = setInterval(r.refresh, 3000); return () => clearInterval(timer); }, [active]);
-  return <><Header title={names[page]} description={page === 'replied' ? '查看软件已发出的回复，包括占位语与欢迎语' : '按时间回看消息与处理结果，查看完整原话和回复'}><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B><B icon={DownloadSimple} disabled={!rows.length} onClick={() => download(names[page] + '.csv', ['时间', '客户', '客户消息', '处理结果', '回复内容'], rows.map(x => [x.timestamp, x.customer, x.message, labels[x.action] || x.action, x.reply]))}>导出 CSV</B><B tone="quiet" onClick={() => setClear(true)}>清空列表</B></Header><div className="page-toolbar"><Search value={q} onChange={setQ} placeholder="搜索客户、原话或回复" /><select aria-label="处理结果筛选" value={status} onChange={e => setStatus(e.target.value)}><option value="all">所有处理结果</option>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><span className="toolbar-note">最新消息在前</span></div><LoadState resource={r}>{() => rows.length ? <><div className="table-scroll"><table><thead><tr><th>时间</th><th>客户</th><th>消息内容</th><th>处理结果</th><th>回复</th></tr></thead><tbody>{rows.slice(index * 50, index * 50 + 50).map((row, i) => <tr key={index * 50 + i}><td className="table-time">{row.timestamp}</td><td className="table-customer">{row.customer}</td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.message || '—'}</button></td><td><span className={'table-tag ' + (outgoing.has(row.action) ? 'positive' : '')}>{labels[row.action] || row.action}</span></td><td><button className="cell-link secondary-text" onClick={() => setSelected(row)}>{row.reply || '—'}</button></td></tr>)}</tbody></table></div><Pagination page={index} total={rows.length} onPage={setIndex} /></> : <Empty title={q ? '没有匹配的记录' : '暂无消息记录'} text="新消息处理后会出现在这里" />}</LoadState>{selected && <Modal title={selected.customer + ' · 消息详情'} wide onClose={() => setSelected(null)}><p className="muted">{selected.timestamp} · {labels[selected.action] || selected.action}</p><h3>客户原话</h3><pre className="prose">{selected.message || '—'}</pre><h3>回复内容</h3><pre className="prose">{selected.reply || '暂无回复'}</pre></Modal>}{clear && <Confirm title="清空当前消息列表？" danger busy={busy} onClose={() => setClear(false)} onConfirm={async () => {
+  return <><Header title={names[page]} description={page === 'replied' ? '查看已发送回复、学习状态与入库结果' : '按时间回看消息与处理结果，查看完整原话和回复'}><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B><B icon={DownloadSimple} disabled={!rows.length} onClick={() => download(names[page] + '.csv', ['时间', '客户', '客户消息', '处理结果', '回复内容'], rows.map(x => [x.timestamp, x.customer, x.message, labels[x.action] || x.action, x.reply]))}>导出 CSV</B><B tone="quiet" onClick={() => setClear(true)}>清空列表</B></Header><div className="page-toolbar"><Search value={q} onChange={setQ} placeholder="搜索客户、原话或回复" /><select aria-label="处理结果筛选" value={status} onChange={e => setStatus(e.target.value)}><option value="all">所有处理结果</option>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><span className="toolbar-note">最新消息在前</span></div><LoadState resource={r}>{() => rows.length ? <><div className="table-scroll"><table><thead><tr><th>时间</th><th>客户</th><th>消息内容</th><th>处理结果</th><th>回复</th><th>学习状态</th></tr></thead><tbody>{rows.slice(index * 50, index * 50 + 50).map((row, i) => <tr key={index * 50 + i}><td className="table-time">{row.timestamp}</td><td className="table-customer">{row.customer}</td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.question || row.message || '—'}</button></td><td><span className={'table-tag ' + (outgoing.has(row.action) ? 'positive' : '')}>{labels[row.action] || row.action}</span></td><td><button className="cell-link secondary-text" onClick={() => setSelected(row)}>{row.reply || '—'}</button></td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.learning?.label || '尚无学习记录'}</button></td></tr>)}</tbody></table></div><Pagination page={index} total={rows.length} onPage={setIndex} /></> : <Empty title={q ? '没有匹配的记录' : '暂无消息记录'} text="新消息处理后会出现在这里" />}</LoadState>{selected && <Modal title={selected.customer + ' · 消息详情'} wide onClose={() => setSelected(null)}><p className="muted">{selected.timestamp} · {labels[selected.action] || selected.action}</p><h3>客户原话</h3><pre className="prose">{selected.question || (selected.message !== selected.reply ? selected.message : '旧记录未保存客户原话')}</pre><h3>回复内容</h3><pre className="prose">{selected.reply || '暂无回复'}</pre><section className="learning-receipt"><h3>学习状态</h3><p>{selected.learning?.label || '尚无学习记录'}</p>{selected.learning?.result?.rules > 0 && <p>语气习惯 {selected.learning.result.rules} 条</p>}{selected.learning?.result?.tones > 0 && <p>口吻样本 {selected.learning.result.tones} 条</p>}<div className="row-actions">{selected.record_id && selected.archive === r.data.archive && <B disabled={busy || selected.learning?.status === 'analyzing'} onClick={async () => {
+        const result = await run('page.reply.prepare', { archive: r.data.archive, record: selected.record_id });
+        if (result?.review) { setSelected(null); setReview(result.review); r.refresh(); }
+      }}>{['ready', 'learned'].includes(selected.learning?.status) ? '查看学习内容' : '分析并学习这条回复'}</B>}<B onClick={() => { setSelected(null); navigate('learned'); }}>查看学习记录</B>{selected.learning?.entries?.length > 0 && <B onClick={() => {
+        sessionStorage.setItem('knowledgeSearch', selected.question || '');
+        setSelected(null); navigate('knowledge');
+      }}>查看入库条目</B>}</div></section></Modal>}{review && <ReplyReview review={review} run={run} busy={busy} onClose={() => setReview(null)} onSaved={r.refresh}/>}{clear && <Confirm title="清空当前消息列表？" danger busy={busy} onClose={() => setClear(false)} onConfirm={async () => {
       if (await run('records.clear')) {
         setClear(false);
         r.refresh();
@@ -332,6 +342,11 @@ function Knowledge({
     page
   }, active);
   useEffect(() => {
+    if (!active) return;
+    const question = sessionStorage.getItem('knowledgeSearch');
+    if (question) { setQ(question); setSearch(question); setPage(0); sessionStorage.removeItem('knowledgeSearch'); }
+  }, [active]);
+  useEffect(() => {
     const t = setTimeout(() => {
       setSearch(q);
       setPage(0);
@@ -364,7 +379,7 @@ function Knowledge({
     <B tone="primary" icon={Plus} disabled={!r.data || busy} onClick={() => setEntry({})}>新增问答</B>
     <input hidden type="file" multiple ref={input} accept=".txt,.md,.csv,.xlsx,.xlsm,.xls,.docx" onChange={upload} />
   </Header>
-  {imaOpen && r.data && <ImaSync archive={r.data.archive} run={run} busy={busy}
+  {imaOpen && r.data && <ImaSync api={api} archive={r.data.archive} run={run} busy={busy}
     onClose={() => setImaOpen(false)} onSynced={r.refresh} />}
   <ArchiveBar data={r.data} run={run} busy={busy} refresh={() => {
       setPage(0);
@@ -395,43 +410,59 @@ function Knowledge({
       }
     }}>{confirm.action === 'rebuild' ? '将清空当前索引，并从原始文件重新生成。手动新增且没有源文件的内容不会保留，请确认后再继续。' : confirm.row?.text}</Confirm>}{unansweredOpen && <Unanswered api={api} run={run} busy={busy} onClose={()=>setUnansweredOpen(false)} onSaved={r.refresh}/>} {ingest && <Ingest archive={r.data.archive} run={run} busy={busy} onClose={() => setIngest(false)} onSaved={r.refresh} />}</>;
 }
-function ImaSync({ archive, run, busy, onClose, onSynced }) {
+function ImaSync({ archive, api, run, busy, onClose, onSynced }) {
   const [wiki, setWiki] = useState('');
   const [clientId, setClientId] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [auto, setAuto] = useState(false);
+  const [minutes, setMinutes] = useState('15');
+  const [saved, setSaved] = useState(null);
   const [result, setResult] = useState(null);
-
+  const [bases, setBases] = useState([]);
+  useEffect(() => {
+    api('resource?name=ima').then(data => {
+      setWiki(data.wiki || ''); setAuto(data.auto); setMinutes(data.minutes); setSaved(data);
+    }).catch(() => {});
+  }, [api]);
   async function submit(action) {
     setResult(null);
-    const out = await run('page.kb.ima_' + action, { archive, wiki, clientId, apiKey });
+    if (action === 'bases') {
+      const out = await run('page.kb.ima_bases', { archive, clientId, apiKey });
+      if (out) {
+        setBases(out.bases || []); setResult(out);
+        if (out.bases?.length === 1) setWiki(out.bases[0].id);
+      }
+      return;
+    }
+    if (action === 'test') {
+      const out = await run('page.kb.ima_test', { archive, wiki, clientId, apiKey });
+      if (out) setResult(out);
+      return;
+    }
+    const out = await run('page.kb.ima_save', { archive, wiki, clientId, apiKey, auto, minutes });
     if (!out) return;
-    setResult(out);
-    if (action === 'sync') onSynced();
+    setSaved(out); setClientId(''); setApiKey(''); setResult(out);
+    if (action === 'sync') {
+      const synced = await run('page.kb.ima_saved_sync', { archive });
+      if (synced) { setResult(synced); onSynced(); }
+    }
   }
-
   return <Modal title="同步 ima 知识库" onClose={onClose}>
-    <p className="muted">读取云端客服问答并写入独立档案。同步完成后，切换档案并用「试问一句」检查命中资料。</p>
+    <p className="muted">将团队维护的客服问答同步到独立资料库，切换到该档案后用于回复。</p>
     <div className="form-stack">
-      <label>知识库链接或 ID<input value={wiki} onChange={e => setWiki(e.target.value)} disabled={busy}
-        placeholder="https://ima.qq.com/wikis?knowledgeBaseId=…" /></label>
-      <label>ima Client ID<input value={clientId} onChange={e => setClientId(e.target.value)} disabled={busy}
-        autoComplete="off" /></label>
-      <label>ima API Key<input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-        disabled={busy} autoComplete="new-password" /></label>
+      <B disabled={busy} onClick={() => submit('bases')}>读取我的知识库</B>{bases.length > 0 && <label>选择知识库<select value={wiki} disabled={busy} onChange={e => setWiki(e.target.value)}><option value="">请选择</option>{bases.map(base => <option key={base.id} value={base.id}>{base.name}</option>)}</select></label>}<label>知识库链接或 ID<input value={wiki} onChange={e => setWiki(e.target.value)} disabled={busy} placeholder="https://ima.qq.com/wikis?knowledgeBaseId=…" /></label>
+      <label>ima Client ID<input value={clientId} onChange={e => setClientId(e.target.value)} disabled={busy} autoComplete="off" placeholder={saved?.configured ? '已保存，留空沿用' : '输入 Client ID'}/></label>
+      <label>ima API Key<input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={busy} autoComplete="new-password" placeholder={saved?.configured ? '已保存，留空沿用' : '输入 API Key'}/></label>
+      <label className="check-label"><input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} disabled={busy}/>软件运行时自动同步</label>
+      <label>同步间隔（分钟）<input type="number" min="5" max="1440" value={minutes} onChange={e => setMinutes(e.target.value)} disabled={busy}/></label>
     </div>
-    <p className="muted"><a href="https://ima.qq.com/agent-interface" target="_blank" rel="noreferrer">获取 ima 凭证</a>。已经在本机配置过凭证时，可以留空。</p>
-    {result && <div className="inline-note" role="status">
-      <div>{result.message}</div>
-      {result.files && (result.files.length ?
-        <div>找到了 {result.files.length} 份客服问答：{result.files.join('、')}</div> :
-        <div>读取了 {result.total} 个条目。请在 ima 库的根目录添加「游戏名 客服问答.txt」文件后同步。</div>)}
-      {result.importResult?.failed?.map(file => <div key={file.file}>{file.file}：{file.reason}</div>)}
-    </div>}
+    <p className="muted"><a href="https://ima.qq.com/agent-interface" target="_blank" rel="noreferrer">获取 ima 凭证</a></p>
+    {saved?.last?.time && <p className="muted">上次同步 {saved.last.time} · {saved.last.ok ? saved.last.chunks + ' 条' : saved.last.error}</p>}
+    {result && <div className="inline-note" role="status"><div>{result.message}</div>{Array.isArray(result.files) && <div>发现 {result.files.length} 份正式问答</div>}{result.importResult?.failed?.map(file => <div key={file.file}>{file.file} · {file.reason}</div>)}</div>}
     <div className="dialog-actions">
       <B disabled={busy || !wiki.trim()} onClick={() => submit('test')}>测试连接</B>
-      <B tone="primary" icon={DownloadSimple} disabled={busy || !wiki.trim()} onClick={() => submit('sync')}>
-        {busy ? '处理中…' : '同步到本地'}
-      </B>
+      <B disabled={busy || !wiki.trim()} onClick={() => submit('save')}>保存设置</B>
+      <B tone="primary" icon={DownloadSimple} disabled={busy || !wiki.trim()} onClick={() => submit('sync')}>{busy ? '正在同步…' : '保存并同步'}</B>
     </div>
   </Modal>;
 }
@@ -539,20 +570,43 @@ function Prompts({
             }))} /><div className="editor-footer">{draft.text.length.toLocaleString()} 字 · 保存后立即生效</div></section><aside className="prompt-guide"><h3><CheckCircle size={18} />受保护规则</h3><pre>{d.safety}</pre><p>右侧规则仅供查看。编辑完成后，建议在「试问一句」验证资料检索。</p></aside></div>}</>}</LoadState>{reset && <Confirm title="恢复当前提示词的默认内容？" busy={busy} onClose={() => setReset(false)} onConfirm={() => save('reset')}>当前提示词的自定义内容将被默认版本替换。</Confirm>}</>;
 }
 function Learned({
+  navigate,
   api,
   run,
   busy,
   active
 }) {
   const r = useResource(api, 'learned', {}, active);
+  const reviews = useResource(api, 'learning', {}, active);
+  const [review, setReview] = useState(null);
+  useEffect(() => { if (!active) return; const timer = setInterval(reviews.refresh, 3000); return () => clearInterval(timer); }, [active]);
+  const importInput = useRef(null);
+  const [importError, setImportError] = useState('');
+  const [factQuestion, setFactQuestion] = useState('');
+  const [factAnswer, setFactAnswer] = useState('');
   const [confirm, setConfirm] = useState(null),
     [preview, setPreview] = useState(false);
-  return <><Header title="学到的" description="检查从人工改稿中学习的语气与事实"><B icon={Eye} disabled={!r.data} onClick={() => setPreview(true)}>查看实际注入内容</B><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B></Header><ArchiveBar data={r.data} run={run} busy={busy} refresh={r.refresh} /><LoadState resource={r}>{d => <><div className="learning-status"><div><h2>从人工改稿中学习</h2><p>语气规则 {d.counts.rules} · 口吻样本 {d.counts.tones} · 已屏蔽 {d.counts.blocked} · 已采纳 {d.counts.accepts}</p></div><label className="switch-label"><input type="checkbox" role="switch" aria-label="从人工改稿中学习" checked={d.enabled} disabled={busy} onChange={async e => {
+  useEffect(() => {
+    if (confirm?.action === 'fact.accept') {
+      setFactQuestion(confirm.row.question || ''); setFactAnswer(confirm.row.claim || '');
+    }
+  }, [confirm]);
+
+  return <><Header title="学到的" description="检查从人工改稿中学习的语气与事实"><input type="file" accept=".json" hidden ref={importInput} onChange={async e => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+          setImportError('');
+          const data = JSON.parse(await file.text());
+          if (await run('page.review.import', { archive: r.data.archive, items: data.items })) r.refresh();
+        } catch (error) { setImportError('文件无法读取，请选择完整的复核 JSON 文件。'); }
+        e.target.value = '';
+      }}/><B disabled={busy || !r.data} onClick={() => importInput.current.click()}>导入历史复核稿</B><B icon={Eye} disabled={!r.data} onClick={() => setPreview(true)}>查看实际注入内容</B><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B></Header>{importError && <p role="alert" className="inline-note error">{importError}</p>}<ArchiveBar data={r.data} run={run} busy={busy} refresh={r.refresh} /><LoadState resource={r}>{d => <><div className="learning-status"><div><h2>从人工改稿中学习</h2><p>语气规则 {d.counts.rules} · 口吻样本 {d.counts.tones} · 已屏蔽 {d.counts.blocked} · 已采纳 {d.counts.accepts}</p></div><label className="switch-label"><input type="checkbox" role="switch" aria-label="从人工改稿中学习" checked={d.enabled} disabled={busy} onChange={async e => {
               if (await run('page.learn.toggle', {
                 archive: d.archive,
                 enabled: e.target.checked
               })) r.refresh();
-            }} /><span>{d.enabled ? '已开启' : '已关闭'}</span></label></div><section className="data-panel"><div className="section-heading"><h2>语气与口吻</h2><span>{d.rows.length} 条</span></div>{d.rows.length ? <div className="table-scroll"><table><thead><tr><th>类型</th><th>学到的内容</th><th>采纳次数</th><th>操作</th></tr></thead><tbody>{d.rows.map(row => <tr key={row.kind + row.id}><td><span className="table-tag">{row.label}</span></td><td className="wrap-cell">{row.text}</td><td>{row.hits || 1}</td><td><div className="row-actions"><B disabled={busy} onClick={() => setConfirm({
+            }} /><span>{d.enabled ? '已开启' : '已关闭'}</span></label></div><section className="data-panel"><div className="section-heading"><h2>回复学习记录</h2></div>{(reviews.data?.reviews || []).slice().reverse().map(row => <article className="learning-review-row" key={row.id}><div><strong>{row.question || '未记录问题'}</strong><p>{row.answer}</p><small>{row.receipt?.label || row.status} · {row.updated}</small></div>{(row.status === 'ready' || (row.status === 'learned' && !row.selected?.includes('reply'))) && <B disabled={busy} onClick={() => setReview(row)}>{row.status === 'learned' ? '继续学习问答' : '确认学习'}</B>}</article>)}{!reviews.data?.reviews?.length && <p className="muted">手动回复成功发送后，可在这里查看或继续学习。</p>}</section><section className="data-panel"><div className="section-heading"><h2>语气与口吻</h2><span>{d.rows.length} 条</span></div>{d.rows.length ? <div className="table-scroll"><table><thead><tr><th>类型</th><th>学到的内容</th><th>采纳次数</th><th>操作</th></tr></thead><tbody>{d.rows.map(row => <tr key={row.kind + row.id}><td><span className="table-tag">{row.label}</span></td><td className="wrap-cell">{row.text}</td><td>{row.hits || 1}</td><td><div className="row-actions"><B disabled={busy} onClick={() => setConfirm({
                         action: 'learn.block',
                         row,
                         title: '屏蔽这条学习内容？'
@@ -560,7 +614,7 @@ function Learned({
                         action: 'learn.delete',
                         row,
                         title: '删除这条学习记录？'
-                      })} /></div></td></tr>)}</tbody></table></div> : <Empty title="还没有学习记录" text="人工编辑回复并成功发送后，学习结果会显示在这里" />}</section><section className="data-panel"><div className="section-heading"><div><h2>待确认的业务事实</h2><p>只有你确认后才会加入资料库</p></div><span>{d.facts.length} 条</span></div>{d.facts.map(row => <article className="fact-row" key={row.id}><div><h3>{row.question || '未记录问题'}</h3><p>{row.claim}</p><small>{row.source || '人工改稿学到'} · {row.ts}</small></div><div className="row-actions"><B tone="quiet" disabled={busy} onClick={() => setConfirm({
+                      })} /></div></td></tr>)}</tbody></table></div> : <Empty title="还没有学习记录" text="人工编辑回复并成功发送后，学习结果会显示在这里" />}</section><section className="data-panel"><div className="section-heading"><div><h2>待确认的业务事实</h2><p>只有你确认后才会加入资料库</p></div><span>{d.facts.length} 条</span></div>{d.facts.map(row => <article className="fact-row" key={row.id}><div><h3>{row.question || '未记录问题'}</h3><p>{row.claim}</p><small>{row.source || '人工改稿学到'} · {row.ts}</small>{row.review && <details className="source-files"><summary>查看复核依据与待核实条件</summary><p>{row.review.reason}</p><p>需核实 · {row.review.needed}</p><p>原始归档行号 · {row.review.source_lines}</p></details>}</div><div className="row-actions"><B tone="quiet" disabled={busy} onClick={() => setConfirm({
                 action: 'fact.reject',
                 row,
                 title: '拒绝这条业务事实？'
@@ -568,16 +622,17 @@ function Learned({
                 action: 'fact.accept',
                 row,
                 title: '确认事实并加入资料库？'
-              })}>采纳入库</B></div></article>)}{!d.facts.length && <Empty title="暂无待确认事实" />}</section></>}</LoadState>{preview && <Modal title="实际注入给 AI 的内容" wide onClose={() => setPreview(false)}><pre className="prose">{r.data.preview || '当前没有注入学习内容'}</pre></Modal>}{confirm && <Confirm title={confirm.title} busy={busy} onClose={() => setConfirm(null)} onConfirm={async () => {
+              })}>采纳入库</B></div></article>)}{!d.facts.length && <Empty title="暂无待确认事实" />}</section><section className="data-panel"><div className="section-heading"><h2>已处理的业务事实</h2><span>{d.factHistory?.length || 0} 条</span></div>{(d.factHistory || []).map(row => <article className="learning-review-row" key={row.id}><div><strong>{row.published?.question || row.question}</strong><p>{row.published?.answer || row.claim}</p><small>{row.status === 'accepted' ? '已采纳入库' : '已拒绝'} · {row.decided}</small></div>{row.entry_id && <B onClick={() => { sessionStorage.setItem('knowledgeSearch', row.published?.question || row.question || ''); navigate('knowledge'); }}>已保存条目</B>}</article>)}{!d.factHistory?.length && <p className="muted">采纳或拒绝后，处理结果会保留在这里。</p>}</section></>}</LoadState>{review && <ReplyReview review={review} run={run} busy={busy} onClose={() => setReview(null)} onSaved={() => { reviews.refresh(); r.refresh(); }}/>}{preview && <Modal title="实际注入给 AI 的内容" wide onClose={() => setPreview(false)}><pre className="prose">{r.data.preview || '当前没有注入学习内容'}</pre></Modal>}{confirm && <Confirm title={confirm.title} busy={busy} onClose={() => setConfirm(null)} onConfirm={async () => {
       if (await run('page.' + confirm.action, {
         archive: r.data.archive,
         id: confirm.row.id,
-        kind: confirm.row.kind
+        kind: confirm.row.kind,
+        ...(confirm.action === 'fact.accept' ? { question: factQuestion, answer: factAnswer } : {})
       })) {
         setConfirm(null);
         r.refresh();
       }
-    }}><p>{confirm.row.text || confirm.row.claim}</p>{confirm.action === 'fact.accept' && <p>请确认数字、型号与政策准确无误，采纳后会立即用于后续回复。</p>}</Confirm>}</>;
+    }}>{confirm.action === 'fact.accept' ? <div className="form-stack"><label>适用游戏与问题<input value={factQuestion} onChange={e => setFactQuestion(e.target.value)} maxLength={2000}/></label><label>核实后的完整答案<textarea value={factAnswer} onChange={e => setFactAnswer(e.target.value)} rows={6} maxLength={10000}/></label>{confirm.row.review && <p className="muted">需要核实 · {confirm.row.review.needed}</p>}<p>请核对当前游戏、版本、区服及活动条件，确认后立即用于回复。</p></div> : <p>{confirm.row.text || confirm.row.claim}</p>}</Confirm>}</>;
 }
 function Probe({
   api,
@@ -703,6 +758,7 @@ function Settings({
 const components = {
   all: History,
   replied: History,
+  assistant: AssistantPage,
   dashboard: Dashboard,
   knowledge: Knowledge,
   prompts: Prompts,

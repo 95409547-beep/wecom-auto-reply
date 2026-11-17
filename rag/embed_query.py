@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from threading import Lock
 
 # Must be set BEFORE importing sentence_transformers / transformers
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
@@ -18,6 +19,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import logging
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
+    from rag.onnx_embedding import OnnxBgeModel
     from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,8 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 VECTOR_SIZE = 512
 
-_model: SentenceTransformer | None = None
+_model: OnnxBgeModel | SentenceTransformer | None = None
+_model_lock = Lock()
 
 
 def _resolve_model_path() -> str | Path:
@@ -44,14 +47,27 @@ def _resolve_model_path() -> str | Path:
     return MODEL_NAME
 
 
-def get_model() -> SentenceTransformer:
+def get_model() -> OnnxBgeModel | SentenceTransformer:
     global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        model_path = _resolve_model_path()
-        logger.info(f"Loading embedding model: {model_path}")
-        _model = SentenceTransformer(str(model_path))
-    return _model
+    with _model_lock:
+        if _model is not None:
+            return _model
+
+        app_root = Path(__file__).resolve().parent.parent
+        model_dir = app_root / "bge_model"
+        portable = (app_root / "_internal" / "python" / "python.exe").is_file()
+        if portable or (model_dir / "model.onnx").is_file():
+            from rag.onnx_embedding import OnnxBgeModel
+
+            logger.info("Loading ONNX embedding model: %s", model_dir)
+            _model = OnnxBgeModel(model_dir)
+        else:
+            from sentence_transformers import SentenceTransformer
+
+            model_path = _resolve_model_path()
+            logger.info("Loading embedding model: %s", model_path)
+            _model = SentenceTransformer(str(model_path))
+        return _model
 
 
 # BGE 模型要求检索查询前加此前缀，否则检索精度大幅下降

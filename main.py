@@ -490,6 +490,12 @@ def _main_impl():
                 return
 
             send_ok = _do_send(customer_name, reply_text, manual=manual)
+            from uuid import uuid4
+            from rag import archives
+            record_id = uuid4().hex
+            archive_id = (learn_ctx or {}).get("archive") or archives.active_id()
+            log_ctx.update(record_id=record_id, archive_id=archive_id,
+                           draft=(learn_ctx or {}).get("draft", ""))
             # Log send result AFTER actual send (not optimistically)
             responder.log_send_result(customer_name, reply_text, send_ok,
                                       **(log_ctx or {}))
@@ -505,7 +511,10 @@ def _main_impl():
                 #   原来传的是空串，那一列永远空白（2026-10-06 修）。
                 root.after(0,
                     lambda: window.add_record(
-                        customer_name, reply_text, "replied", reply_text))
+                        customer_name, reply_text, "replied", reply_text,
+                        question=log_ctx.get("customer_message", ""), record_id=record_id,
+                        archive=archive_id, source=log_ctx.get("source", "auto"),
+                        draft=log_ctx.get("draft", "")))
                 # ★ 学习挂在"真的发出去"之后：没发出去的话不该被学走
                 if learn_ctx:
                     if learn_ctx.get("direct_confirm"):
@@ -535,6 +544,9 @@ def _main_impl():
         收进去的是**问答对**，不是语气样本 —— 点「采纳」就进资料库，
         下次同一个问题检索分就高了，不用再转人工。（学 AI 自己写的语气 = 越学越偏。）
         """
+        if window._web_mode:
+            _prepare_web_learning(ctx, sent_text, direct=True)
+            return
         try:
             from rag.learn import record_direct_send
             got = record_direct_send(ctx.get("question", ""), sent_text, cfg=cfg)
@@ -554,6 +566,9 @@ def _main_impl():
 
         分析要调 LLM（好几秒），所以放后台线程；弹窗必须在 Tk 线程，用 root.after 回来。
         """
+        if window._web_mode:
+            _prepare_web_learning(ctx, sent_text)
+            return
         # 同一时刻只开一个勾选窗；后面来的先排队，等这个处理完再弹
         learn_queue: list = _learn_state["queue"]
         if _learn_state["busy"]:
@@ -573,6 +588,21 @@ def _main_impl():
 
         import threading
         threading.Thread(target=work, daemon=True).start()
+
+    def _prepare_web_learning(ctx: dict, sent_text: str, direct=False):
+        from rag import archives, reply_learning
+        archive_id = ctx.get("archive") or archives.active_id()
+
+        def work():
+            try:
+                reply_learning.prepare(
+                    ctx.get("question", ""), sent_text, ctx.get("draft", ""),
+                    archive=archive_id, cfg=cfg, direct=direct,
+                )
+            except Exception:
+                log.exception("回复学习分析失败，可从已回复记录重试")
+        import threading
+        threading.Thread(target=work, daemon=True, name="reply-learning").start()
 
     def _offer_learn(proposal: dict, ctx: dict, sent_text: str):
         """在 Tk 线程里弹出勾选窗。"""
@@ -691,6 +721,8 @@ def _main_impl():
         ctx = {"direct_confirm": True,
                "question": item.customer_message or "",
                "draft": item.ai_reply or ""}
+        from rag import archives
+        ctx["archive"] = archives.active_id()
         # 第 5 项：日志上下文（看板要区分"人工直发草稿"和"机器人自动答"）
         log_ctx = {"customer_message": item.customer_message or "",
                    "guard_decision": item.guard_decision or "",
@@ -723,6 +755,8 @@ def _main_impl():
             return
         ctx = {"question": item.customer_message or "",
                "draft": item.ai_reply or ""}
+        from rag import archives
+        ctx["archive"] = archives.active_id()
         if not pending_queue.begin_send(item.key, edited_text):
             return
         log_ctx = {"customer_message": item.customer_message or "",
@@ -1328,6 +1362,36 @@ def _main_impl():
 
     # ── start everything ───────────────────────────────────────────
 
+    _ima_sync_state = {"busy": False, "next": 0.0}
+
+    def _ima_sync_tick():
+        from time import monotonic
+        from rag.ima_kb import read_settings, sync_saved
+        if window._should_exit:
+            return
+        try:
+            settings = read_settings()
+            if settings["auto"] and settings["configured"] and not _ima_sync_state["busy"] and monotonic() >= _ima_sync_state["next"]:
+                _ima_sync_state["busy"] = True
+                _ima_sync_state["next"] = monotonic() + max(5, int(settings["minutes"])) * 60
+
+                def work():
+                    try:
+                        services = getattr(window, "web_services", None)
+                        if services:
+                            with services.lock:
+                                sync_saved(services._client())
+                    except Exception:
+                        log.warning("ima 自动同步失败，可在同步面板查看详情")
+                    finally:
+                        _ima_sync_state["busy"] = False
+                import threading
+                threading.Thread(target=work, daemon=True, name="ima-sync").start()
+        except (ValueError, OSError):
+            log.warning("ima 自动同步配置无效，请重新保存同步设置")
+        root.after(30000, _ima_sync_tick)
+
+    root.after(5000, _ima_sync_tick)
     root.after(CHECK * 1000, scan_tick)
     root.after(500, _process_send_queue_tick)
     root.after(100, _check_exit)

@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 import os
+import json
+from datetime import datetime
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -20,6 +22,84 @@ _REPLY_RULE = (
 )
 
 
+def read_settings() -> dict:
+    from config import settings_store
+    values = settings_store.read_env()
+    try:
+        credentials()
+        configured = True
+    except ValueError:
+        configured = False
+    return {"wiki": values.get("IMA_KNOWLEDGE_BASE_ID", ""),
+            "configured": configured, "auto": values.get("IMA_AUTO_SYNC") == "1",
+            "minutes": values.get("IMA_SYNC_MINUTES", "15"),
+            "last": _read_sync_status()}
+
+
+def _read_sync_status() -> dict:
+    from app_paths import app_dir
+    try:
+        return json.loads((app_dir() / "data/kb/ima_sync.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(payload: dict) -> dict:
+    from config import settings_store
+    old = settings_store.read_env()
+    client_id, api_key = credentials(
+        str(payload.get("clientId") or old.get("IMA_OPENAPI_CLIENTID", "")),
+        str(payload.get("apiKey") or old.get("IMA_OPENAPI_APIKEY", "")),
+    )
+    wiki = knowledge_base_id(str(payload.get("wiki") or old.get("IMA_KNOWLEDGE_BASE_ID", "")))
+    try:
+        minutes = int(payload.get("minutes", 15))
+    except (ValueError, TypeError):
+        raise ValueError("同步间隔请输入 5–1440 分钟。") from None
+    if not 5 <= minutes <= 1440:
+        raise ValueError("同步间隔请输入 5–1440 分钟。")
+    values = {"IMA_OPENAPI_CLIENTID": client_id, "IMA_OPENAPI_APIKEY": api_key,
+              "IMA_KNOWLEDGE_BASE_ID": wiki, "IMA_SYNC_MINUTES": str(minutes),
+              "IMA_AUTO_SYNC": "1" if payload.get("auto") else "0"}
+    settings_store.update_env(values)
+    os.environ.update(values)
+    return read_settings()
+
+
+def sync_saved(qdrant) -> dict:
+    from app_paths import app_dir
+    from config import settings_store
+    values = settings_store.read_env()
+    wiki = knowledge_base_id(values.get("IMA_KNOWLEDGE_BASE_ID", ""))
+    client_id, api_key = credentials(
+        values.get("IMA_OPENAPI_CLIENTID", ""), values.get("IMA_OPENAPI_APIKEY", ""),
+    )
+    status = {"time": datetime.now().isoformat(timespec="seconds"), "wiki": wiki}
+    try:
+        with httpx.Client(timeout=15) as http:
+            ima = ImaKnowledge(http, client_id, api_key)
+            title, items = ima.inventory(wiki)
+            documents = ima.read_faqs(ima.faq_entries(items))
+        result = sync_to_archive(wiki, title, documents, qdrant)
+        imported = result["importResult"]
+        status.update(ok=not imported["failed"], archive=result["archive"],
+                      files=len(imported["ok"]), chunks=imported["chunks"])
+        result["message"] = f"ima 同步完成，成功 {len(imported['ok'])} 份，失败 {len(imported['failed'])} 份"
+        return result
+    except Exception as error:
+        detail = str(error)
+        for value in (client_id, api_key):
+            detail = detail.replace(value, "〔已隐藏〕")
+        status.update(ok=False, error=detail[:300])
+        raise
+    finally:
+        path = app_dir() / "data/kb/ima_sync.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+
+
 @dataclass(frozen=True)
 class FaqDocument:
     name: str
@@ -31,8 +111,8 @@ def knowledge_base_id(value: str) -> str:
     value = value.strip()
     if value.startswith(_ORIGIN + "/"):
         value = parse_qs(urlsplit(value).query).get("knowledgeBaseId", [""])[0]
-    if not re.fullmatch(r"[0-9]{1,24}", value):
-        raise ValueError("请输入 ima 知识库页面链接或库 ID。")
+    if not re.fullmatch(r"(?:[0-9]{1,24}|ima_kb_[A-Za-z0-9]{8})", value):
+        raise ValueError("请点击「读取我的知识库」选择要同步的资料库。")
     return value
 
 
@@ -82,6 +162,26 @@ class ImaKnowledge:
         if not isinstance(result.get("data"), dict):
             raise ValueError("ima 返回的数据格式有误。")
         return result["data"]
+
+    def bases(self, query: str = "") -> list[dict]:
+        rows = []
+        cursor = ""
+        seen = {cursor}
+        for _ in range(30):
+            data = self._request("search_knowledge_base", query=query, cursor=cursor, limit=20)
+            for item in data.get("info_list", []):
+                key = item.get("kb_id") or item.get("id")
+                name = item.get("kb_name") or item.get("name")
+                if key and name:
+                    rows.append({"id": knowledge_base_id(key), "name": str(name),
+                                 "members": item.get("member_count"), "role": item.get("role_type", "")})
+            if data.get("is_end") is True:
+                return rows
+            cursor = data.get("next_cursor")
+            if not isinstance(cursor, str) or cursor in seen:
+                raise ValueError("ima 知识库列表未能完整读取，请重试。")
+            seen.add(cursor)
+        raise ValueError("ima 知识库过多，请输入名称缩小范围。")
 
     def inventory(self, wiki_id: str) -> tuple[str, list[dict]]:
         data = self._request("get_knowledge_base", ids=[wiki_id])

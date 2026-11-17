@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FeedbackContext, PageRouter } from './Pages';
+import { LearningNotice } from './Assistant';
 import './pages.css';
 import { ChatsCircle, Tray, CheckCircle, BookOpen, ChartBar, GearSix, MagnifyingGlass,
   CaretDown, ArrowSquareOut, ArrowLeft, X, PaperPlaneTilt, PencilSimple, ArrowCounterClockwise,
@@ -177,7 +178,7 @@ export function App() {
     setEditing(old => ({ ...old, [selected.key]: false }));
   }
   function choose(row) { setSelectedKey(row.key); setMobileDetail(true); }
-  useEffect(() => { document.title = ({pending:'待人工',all:'全部消息',replied:'已回复',dashboard:'数据看板',knowledge:'资料库',prompts:'提示词',learned:'学到的',probe:'试问一句',settings:'设置'})[page] + ' · 企业微信智能客服'; }, [page]);
+  useEffect(() => { document.title = ({pending:'待人工',all:'全部消息',replied:'已回复',assistant:'AI 助手',dashboard:'数据看板',knowledge:'资料库',prompts:'提示词',learned:'学到的',probe:'试问一句',settings:'设置'})[page] + ' · 企业微信智能客服'; }, [page]);
   function navigate(target) { setNavOpen(false); setPage(target); }
   function native(target) { navigate(({ '全部': 'all', '已回复': 'replied', '数据': 'dashboard', '知识库': 'knowledge', '设置': 'settings' })[target]); }
 
@@ -208,7 +209,7 @@ export function App() {
         <button className={'channel' + (page === 'pending' && filter === 'attention' ? ' active' : '')} onClick={() => { navigate('pending'); setFilter('attention'); setMobileDetail(false); }}><WarningCircle size={20}/><span>需要关注</span>{attention > 0 && <b className="attention-count">{attention}</b>}</button>
         <p className="nav-hint">发送失败和结果待核实的消息<br/>会显示在这里</p>
         <div className="nav-label attention-label"><CaretDown size={14}/>管理</div>
-        {[['dashboard','数据看板',ChartBar],['knowledge','资料库',BookOpen],['prompts','提示词',PencilSimple],['learned','学到的',Robot],['probe','试问一句',ChatsCircle],['settings','设置',GearSix]].map(([id,label,Icon]) => <button key={id} className={'channel'+(page===id?' active':'')} onClick={()=>navigate(id)}><Icon size={20}/><span>{label}</span></button>)}
+        {[['assistant','AI 助手',Robot],['dashboard','数据看板',ChartBar],['knowledge','资料库',BookOpen],['prompts','提示词',PencilSimple],['learned','学到的',Robot],['probe','试问一句',ChatsCircle],['settings','设置',GearSix]].map(([id,label,Icon]) => <button key={id} className={'channel'+(page===id?' active':'')} onClick={()=>navigate(id)}><Icon size={20}/><span>{label}</span></button>)}
         <div className="workspace-note"><BookOpen size={18}/><p>回复前，先确认客户的问题<br/><button onClick={() => native('知识库')} disabled={!connected || !!busy}>查阅知识库 <ArrowSquareOut size={12}/></button></p></div>
       </div>
       <div className="service-panel"><Avatar bot small/><div><strong>自动回复</strong><span><i className={state?.paused ? 'status-dot paused' : 'status-dot'}/>{state?.paused ? '未运行' : '运行中'}</span></div>
@@ -265,6 +266,7 @@ export function App() {
     </main>
     </> : null}
     <PageRouter page={page} navigate={navigate} api={api} run={command} busy={!!busy || !connected} connected={connected} demo={state?.demo} connectionError={connectionError}/>
+    <LearningNotice learning={state?.learning} run={command} busy={!!busy || !connected} navigate={navigate}/>
     {toast && <div className={'toast' + (toast.error ? ' toast-error' : '')} role="status">{toast.error ? <WarningCircle size={19}/> : <Check size={19}/>}<span>{toast.text}</span><IconButton icon={X} label="关闭提示" onClick={() => setToast(null)}/></div>}
     <dialog ref={modal} aria-labelledby="ignore-title" onCancel={() => setConfirmIgnore(null)} onClose={() => setConfirmIgnore(null)}><h2 id="ignore-title">忽略这条消息？</h2><p>这会把 <strong>{confirmIgnore?.customer_name}</strong> 的这条消息移出待人工队列。{confirmIgnore?.send_status === 'queued' ? '已经开始的发送可能无法撤回。' : '不会发送回复。'}</p><blockquote>{confirmIgnore?.customer_message}</blockquote><div className="dialog-actions"><button className="button secondary" onClick={() => setConfirmIgnore(null)}>取消</button><button className="button danger" onClick={() => { command('ignore', { key: confirmIgnore.key, revision: confirmIgnore.revision }); setConfirmIgnore(null); }}>确认忽略</button></div></dialog>
   </div></FeedbackContext.Provider>;

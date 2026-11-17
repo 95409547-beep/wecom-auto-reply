@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.6.0"
 BUILD_FILE = "wecom-build-id.txt"
 APP_DIR = Path(__file__).resolve().parent
 
@@ -36,7 +36,7 @@ def source_build_id(root: Path = APP_DIR) -> str:
 
 def version_label() -> str:
     """Read the packaged revision or snapshot the source revision at startup."""
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or (APP_DIR / BUILD_FILE).is_file():
         try:
             revision = (APP_DIR / BUILD_FILE).read_text(encoding="utf-8").strip()
         except OSError:

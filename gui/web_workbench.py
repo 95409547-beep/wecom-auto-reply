@@ -215,15 +215,37 @@ class WindowAdapter:
         # Tk thread once the start guard sees the reloaded configuration.
         if getattr(w, "_start_guard_banner", False) and w._start_allowed()[0]:
             w.set_banner("")
+        from rag import archives, reply_learning
+        try:
+            reviews = [row for row in reply_learning.reviews(archives.active_id())
+                       if row["status"] in ("ready", "analyzing", "error", "disabled")]
+        except (OSError, ValueError):
+            reviews = []
         return {"items": getattr(w, "_web_pending_rows", []), "paused": w.is_paused(),
                 "banner": getattr(w, "_web_banner", {"text": "", "level": "info"}),
                 "demo": False, "connected": not w._should_exit,
                 "pageBusy": bool(getattr(w, "_web_page_busy", False)),
-                "desktopFocus": getattr(w, "_desktop_focus", 0)}
+                "desktopFocus": getattr(w, "_desktop_focus", 0),
+                "learning": {"archive": archives.active_id(), "reviews": reviews[-50:]}}
 
     def resources(self, name, params):
         if name == "records":
-            return {"rows": [r.to_dict() for r in list(self.window._records)[::-1]]}
+            from rag import archives, reply_learning
+            services = getattr(self.window, "web_services", None)
+            rows = [r.to_dict() for r in list(self.window._records)[-1000:][::-1]]
+            current = archives.active_id()
+            reviews = {row["id"]: row for row in reply_learning.reviews(current)}
+            for row in rows:
+                row["learning"] = {"status": "unrecorded", "label": "尚无学习记录", "entries": []}
+                if row.get("archive") and row["archive"] != current:
+                    row["learning"]["label"] = "其他档案，切换后查看"
+                review = reviews.get(reply_learning.reply_key(row.get("question", ""), row.get("reply", "")))
+                if row.get("archive") == current and review:
+                    row["learning"] = reply_learning.status(
+                        current, row.get("question", ""), row.get("reply", ""),
+                        getattr(services, "qdrant", None), review=review,
+                    )
+            return {"rows": rows, "archive": current}
         services = getattr(self.window, "web_services", None)
         if services is None:
             raise ValueError("页面服务尚未准备好，请等待程序完成启动。")

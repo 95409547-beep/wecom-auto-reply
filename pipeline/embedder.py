@@ -7,33 +7,14 @@ BAAI/bge-small-zh-v1.5: ~100MB, bundled in bge_model/, runs on CPU, zero cost.
 from __future__ import annotations
 
 import hashlib
-import os
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
 import logging
 from uuid import NAMESPACE_URL, uuid5
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from rag.retriever import ensure_collection
-from rag.embed_query import _resolve_model_path
+from rag.embed_query import get_model
 
 logger = logging.getLogger(__name__)
-
-_model: SentenceTransformer | None = None
-
-
-def get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        model_path = _resolve_model_path()
-        logger.info(f"Loading embedding model: {model_path}")
-        _model = SentenceTransformer(str(model_path))
-    return _model
 
 
 def chunk_id(text: str) -> str:

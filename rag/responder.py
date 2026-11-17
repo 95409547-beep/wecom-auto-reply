@@ -261,7 +261,8 @@ class Responder:
     def log_send_result(self, customer_name: str, reply_text: str,
                         send_ok: bool | None, customer_message: str = "",
                         guard_decision: str = "", guard_reason: str = "",
-                        decision_path: str = "", source: str = "auto"):
+                        decision_path: str = "", source: str = "auto",
+                        record_id: str = "", archive_id: str = "", draft: str = ""):
         """Log auto-send outcome AFTER the actual send completes.
 
         Called from main.py's _process_send_queue_tick after _do_send
@@ -284,6 +285,11 @@ class Responder:
                 "customer_name": customer_name,
                 "customer_message": (customer_message or "")[:500],
                 "ai_reply": reply_text[:500] if reply_text else "",
+                "record_id": record_id,
+                "archive": archive_id,
+                "draft": draft[:10000],
+                "learning_question": (customer_message or "")[:10000] if record_id else "",
+                "learning_answer": (reply_text or "")[:10000] if record_id else "",
                 "confidence": 0.0,
                 "dispatch_level": "auto_send",
                 "guard_decision": guard_decision,
@@ -446,7 +452,9 @@ class Responder:
         # ── Embedding ──────────────────────────────────────────────
 
         try:
-            qv = embed_query(text)
+            from rag.game_scope import retrieval_question
+            history = await asyncio.to_thread(self._context.get_recent, customer_name, 6)
+            qv = embed_query(retrieval_question(text, history))
         except Exception as e:
             logger.error(f"Embedding失败: {e}")
             notify_escalation(customer_name, text, reason="Embedding错误")

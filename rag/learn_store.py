@@ -315,6 +315,7 @@ def add_tone_sample(human_text: str, question: str = "", draft: str = "",
 
 def tone_samples(base: Optional[Path] = None) -> List[dict]:
     rows = _read_jsonl(TONE_SAMPLES, base)
+    rows.reverse()  # Appended last wins when the Windows clock gives equal timestamps.
     rows.sort(key=lambda r: (r.get("seq") or 0, r.get("ts", "")), reverse=True)
     return rows
 
@@ -332,7 +333,7 @@ def find_tone(text: str, base: Optional[Path] = None) -> Optional[dict]:
 
 def add_fact(question: str, claim: str, draft: str = "",
              chunk_seen: bool = False, base: Optional[Path] = None,
-             cfg: dict = None, source: str = "改稿学到") -> Optional[dict]:
+             cfg: dict = None, source: str = "改稿学到", review: dict = None) -> Optional[dict]:
     """一条"待确认的说法" → 等用户确认才进资料库。
 
     两个来源：
@@ -357,11 +358,15 @@ def add_fact(question: str, claim: str, draft: str = "",
             if r.get("id") == hid:
                 r["hits"] = int(r.get("hits", 1)) + 1
                 r["ts"] = _now()
+                if review:
+                    r["review"] = review
                 _write_jsonl(FACT_CANDIDATES, rows, base)
                 return r
         row = {"id": hid, "ts": _now(), "seq": _seq(), "claim": claim,
                "question": question[:120], "draft": draft[:200],
                "status": "pending", "hits": 1, "source": source}
+        if review:
+            row["review"] = review
         _append(FACT_CANDIDATES, row, max(20, max_items(cfg)), base)
         return row
 
@@ -374,7 +379,8 @@ def facts(status: str = "pending", base: Optional[Path] = None) -> List[dict]:
 
 
 def set_fact_status(fact_id: str, status: str,
-                    base: Optional[Path] = None) -> bool:
+                    base: Optional[Path] = None, *, entry_id: str = "",
+                    published: dict = None) -> bool:
     """``accepted`` / ``rejected``。"""
     with _lock:
         rows = _read_jsonl(FACT_CANDIDATES, base)
@@ -383,6 +389,10 @@ def set_fact_status(fact_id: str, status: str,
             if r.get("id") == fact_id:
                 r["status"] = status
                 r["decided"] = _now()
+                if entry_id:
+                    r["entry_id"] = entry_id
+                if published:
+                    r["published"] = published
                 hit = True
         if hit:
             _write_jsonl(FACT_CANDIDATES, rows, base)
