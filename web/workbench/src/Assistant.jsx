@@ -52,7 +52,10 @@ export function AssistantPage({ api, run, busy, active }) {
   const [showConnection, setShowConnection] = useState(false);
   const end = useRef(null);
   useEffect(() => { if (active) api('resource?name=assistant').then(setConnection).catch(() => {}); }, [active, api]);
-  useEffect(() => end.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), [messages]);
+  useEffect(() => {
+    // Some WebView versions return a promise. Effects may only return a cleanup function.
+    end.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [messages]);
   async function send(event) {
     event.preventDefault();
     const content = text.trim();
