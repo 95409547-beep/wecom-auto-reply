@@ -4,14 +4,15 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowClockwise, DownloadSimple, Plus, MagnifyingGlass, X, BookOpen, FileText, UploadSimple, PencilSimple, Trash, ArrowCounterClockwise, CaretLeft, CaretRight, WarningCircle, ChartBar, Robot, GearSix, CheckCircle, FloppyDisk, Eye, Play } from '@phosphor-icons/react';
 export const FeedbackContext = createContext(null);
 
-const names = {
+export const pageNames = {
+  pending: '待人工',
   assistant: 'AI 助手',
   all: '全部消息',
   replied: '已回复',
   dashboard: '数据看板',
   knowledge: '资料库',
   prompts: '提示词',
-  learned: '学到的',
+  learned: '学习记录',
   probe: '试问一句',
   settings: '设置'
 };
@@ -143,7 +144,7 @@ function Header({
   description,
   children
 }) {
-  return <div className="page-header"><div><h1>{title}</h1><p>{description}</p></div><div className="header-tools">{children}</div></div>;
+  return <header className="page-header"><div><h1>{title}</h1><p>{description}</p></div>{children && <div className="header-tools">{children}</div>}</header>;
 }
 function Pagination({
   page,
@@ -173,7 +174,7 @@ function History({
   useEffect(() => setIndex(0), [q, status, page]);
   useEffect(() => setLegacyQuestion(''), [selected?.record_id]);
   useEffect(() => { if (!active) return; const timer = setInterval(r.refresh, 3000); return () => clearInterval(timer); }, [active]);
-  return <><Header title={names[page]} description={page === 'replied' ? '查看已发送回复、学习状态与入库结果' : '按时间回看消息与处理结果，查看完整原话和回复'}><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B><B icon={DownloadSimple} disabled={!rows.length} onClick={() => download(names[page] + '.csv', ['时间', '客户', '客户消息', '处理结果', '回复内容'], rows.map(x => [x.timestamp, x.customer, x.message, labels[x.action] || x.action, x.reply]))}>导出 CSV</B><B tone="quiet" onClick={() => setClear(true)}>清空列表</B></Header><div className="page-toolbar"><Search value={q} onChange={setQ} placeholder="搜索客户、原话或回复" /><select aria-label="处理结果筛选" value={status} onChange={e => setStatus(e.target.value)}><option value="all">所有处理结果</option>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><span className="toolbar-note">最新消息在前</span></div><LoadState resource={r}>{() => rows.length ? <><div className="table-scroll"><table><thead><tr><th>时间</th><th>客户</th><th>消息内容</th><th>处理结果</th><th>回复</th><th>学习状态</th></tr></thead><tbody>{rows.slice(index * 50, index * 50 + 50).map((row, i) => <tr key={index * 50 + i}><td className="table-time">{row.timestamp}</td><td className="table-customer">{row.customer}</td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.question || row.message || '—'}</button></td><td><span className={'table-tag ' + (outgoing.has(row.action) ? 'positive' : '')}>{labels[row.action] || row.action}</span></td><td><button className="cell-link secondary-text" onClick={() => setSelected(row)}>{row.reply || '—'}</button></td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.learning?.label || '尚无学习记录'}</button></td></tr>)}</tbody></table></div><Pagination page={index} total={rows.length} onPage={setIndex} /></> : <Empty title={q ? '没有匹配的记录' : '暂无消息记录'} text="新消息处理后会出现在这里" />}</LoadState>{selected && <Modal title={selected.customer + ' · 消息详情'} wide onClose={() => setSelected(null)}><p className="muted">{selected.timestamp} · {labels[selected.action] || selected.action}</p><h3>客户原话</h3><pre className="prose">{selected.question || (selected.message !== selected.reply ? selected.message : '旧记录未保存客户原话')}</pre><h3>回复内容</h3><pre className="prose">{selected.reply || '暂无回复'}</pre><section className="learning-receipt"><h3>学习状态</h3><p className="muted">当前资料库 · {r.data.archiveName || '当前档案'}</p>{!selected.question && <label className="form-stack">补充这条回复对应的问题<input value={legacyQuestion} onChange={e => setLegacyQuestion(e.target.value)} maxLength={2000} placeholder="请填写完整问题，包含适用的游戏"/></label>}<p>{selected.learning?.label || '尚无学习记录'}</p>{selected.learning?.result?.rules > 0 && <p>语气习惯 {selected.learning.result.rules} 条</p>}{selected.learning?.result?.tones > 0 && <p>口吻样本 {selected.learning.result.tones} 条</p>}<div className="row-actions">{selected.record_id && (!selected.archive || selected.archive === r.data.archive) && <B disabled={busy || selected.learning?.status === 'analyzing' || (!selected.question && !legacyQuestion.trim())} onClick={async () => {
+  return <><Header title={pageNames[page]} description={page === 'replied' ? '查看已发送回复、学习状态与入库结果' : '按时间回看消息与处理结果，查看完整原话和回复'}><B icon={ArrowClockwise} onClick={r.refresh}>刷新</B><B icon={DownloadSimple} disabled={!rows.length} onClick={() => download(pageNames[page] + '.csv', ['时间', '客户', '客户消息', '处理结果', '回复内容'], rows.map(x => [x.timestamp, x.customer, x.message, labels[x.action] || x.action, x.reply]))}>导出 CSV</B><B tone="quiet" onClick={() => setClear(true)}>清空列表</B></Header><div className="page-toolbar"><Search value={q} onChange={setQ} placeholder="搜索客户、原话或回复" /><select aria-label="处理结果筛选" value={status} onChange={e => setStatus(e.target.value)}><option value="all">所有处理结果</option>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><span className="toolbar-note">最新消息在前</span></div><LoadState resource={r}>{() => rows.length ? <><div className="table-scroll"><table><thead><tr><th>时间</th><th>客户</th><th>消息内容</th><th>处理结果</th><th>回复</th><th>学习状态</th></tr></thead><tbody>{rows.slice(index * 50, index * 50 + 50).map((row, i) => <tr key={index * 50 + i}><td className="table-time">{row.timestamp}</td><td className="table-customer">{row.customer}</td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.question || row.message || '—'}</button></td><td><span className={'table-tag ' + (outgoing.has(row.action) ? 'positive' : '')}>{labels[row.action] || row.action}</span></td><td><button className="cell-link secondary-text" onClick={() => setSelected(row)}>{row.reply || '—'}</button></td><td><button className="cell-link" onClick={() => setSelected(row)}>{row.learning?.label || '尚无学习记录'}</button></td></tr>)}</tbody></table></div><Pagination page={index} total={rows.length} onPage={setIndex} /></> : <Empty title={q ? '没有匹配的记录' : '暂无消息记录'} text="新消息处理后会出现在这里" />}</LoadState>{selected && <Modal title={selected.customer + ' · 消息详情'} wide onClose={() => setSelected(null)}><p className="muted">{selected.timestamp} · {labels[selected.action] || selected.action}</p><h3>客户原话</h3><pre className="prose">{selected.question || (selected.message !== selected.reply ? selected.message : '旧记录未保存客户原话')}</pre><h3>回复内容</h3><pre className="prose">{selected.reply || '暂无回复'}</pre><section className="learning-receipt"><h3>学习状态</h3><p className="muted">当前资料库 · {r.data.archiveName || '当前档案'}</p>{!selected.question && <label className="form-stack">补充这条回复对应的问题<input value={legacyQuestion} onChange={e => setLegacyQuestion(e.target.value)} maxLength={2000} placeholder="请填写完整问题，包含适用的游戏"/></label>}<p>{selected.learning?.label || '尚无学习记录'}</p>{selected.learning?.result?.rules > 0 && <p>语气习惯 {selected.learning.result.rules} 条</p>}{selected.learning?.result?.tones > 0 && <p>口吻样本 {selected.learning.result.tones} 条</p>}<div className="row-actions">{selected.record_id && (!selected.archive || selected.archive === r.data.archive) && <B disabled={busy || selected.learning?.status === 'analyzing' || (!selected.question && !legacyQuestion.trim())} onClick={async () => {
         const result = await run('page.reply.prepare', { archive: r.data.archive, record: selected.record_id, question: selected.question || legacyQuestion });
         if (result?.review) { setSelected(null); setReview(result.review); r.refresh(); }
       }}>{['ready', 'learned'].includes(selected.learning?.status) ? '查看学习内容' : '分析并学习这条回复'}</B>}<B onClick={() => { setSelected(null); navigate('learned'); }}>查看学习记录</B>{selected.learning?.entries?.length > 0 && <B onClick={() => {
@@ -328,7 +329,8 @@ function Knowledge({
   api,
   run,
   busy,
-  active
+  active,
+  navigate
 }) {
   const [q, setQ] = useState(''),
     [search, setSearch] = useState(''),
@@ -338,7 +340,7 @@ function Knowledge({
     [ingest, setIngest] = useState(false),
     [imaOpen, setImaOpen] = useState(false),
     [unansweredOpen, setUnansweredOpen] = useState(false),
-    [uploadNote, setUploadNote] = useState('');
+    [uploadNote, setUploadNote] = useState(null);
   const input = useRef(null);
   const r = useResource(api, 'knowledge', {
     query: search,
@@ -360,26 +362,31 @@ function Knowledge({
     try {
       const files = await encodeFiles(e.target.files);
       if (!files.length) return;
-      setUploadNote('正在读取并导入资料…');
+      setUploadNote({ text: '正在读取并导入资料…' });
       const out = await run('page.kb.import', {
         archive: r.data.archive,
         files
       });
       if (out) {
-        setUploadNote(out.message + (out.importResult?.failed?.length ? '；' + out.importResult.failed.map(x => x.file + ': ' + x.reason).join('；') : ''));
+        const failed = out.importResult?.failed || [];
+        setUploadNote({
+          text: out.message,
+          failed,
+          hasEntries: out.importResult?.chunks > 0,
+        });
         r.refresh();
-      } else setUploadNote('导入未完成，请查看操作提示。');
+      } else setUploadNote({ text: '导入未完成，请查看操作提示。', error: true });
     } catch (error) {
-      setUploadNote(error.message);
+      setUploadNote({ text: error.message, error: true });
     }
     e.target.value = '';
   }
-  return <><Header title="资料库" description="维护业务事实，让回复有据可查">
-    <B icon={ArrowClockwise} onClick={r.refresh}>刷新</B>
+  return <><Header title="资料库" description="导入团队的问答文件，也可以手动新增或修改问答。">
+    <B tone="primary" icon={UploadSimple} disabled={!r.data || busy} onClick={() => input.current.click()}>导入资料</B>
+    <B icon={Plus} disabled={!r.data || busy} onClick={() => setEntry({})}>新增问答</B>
     <B icon={DownloadSimple} disabled={!r.data || busy} onClick={() => setImaOpen(true)}>同步 ima</B>
-    <B icon={Robot} disabled={!r.data || busy} onClick={() => setIngest(true)}>AI 整理</B>
-    <B icon={UploadSimple} disabled={!r.data || busy} onClick={() => input.current.click()}>导入文件</B>
-    <B tone="primary" icon={Plus} disabled={!r.data || busy} onClick={() => setEntry({})}>新增问答</B>
+    <B tone="quiet" icon={Robot} disabled={!r.data || busy} onClick={() => setIngest(true)}>AI 整理</B>
+    <B tone="quiet" icon={ArrowClockwise} onClick={r.refresh}>刷新</B>
     <input hidden type="file" multiple ref={input} accept=".txt,.md,.csv,.xlsx,.xlsm,.xls,.docx" onChange={upload} />
   </Header>
   {imaOpen && r.data && <ImaSync api={api} archive={r.data.archive} run={run} busy={busy}
@@ -389,7 +396,11 @@ function Knowledge({
       r.refresh();
     }} /><div className="page-toolbar"><Search value={q} onChange={setQ} placeholder="搜索整个资料库" /><B tone="quiet" onClick={()=>setUnansweredOpen(true)}>常见转人工问题</B><span className="toolbar-note">{r.data?.total ?? '—'} 条资料</span><B tone="quiet toolbar-end" disabled={!r.data || busy} onClick={() => setConfirm({
         action: 'rebuild'
-      })}>重建索引</B></div>{uploadNote && <div className="inline-note" role="status">{uploadNote}</div>}<LoadState resource={r}>{d => d.rows.length ? <><div className="table-scroll knowledge-table"><table><thead><tr><th>问题 / 资料</th><th>回答</th><th>来源</th><th>操作</th></tr></thead><tbody>{d.rows.map(row => <tr key={row.id}><td><button className="cell-link" onClick={() => setEntry(row)}>{row.faq ? row.question : '[整段资料] ' + row.text}</button></td><td><button className="cell-link secondary-text" onClick={() => setEntry(row)}>{row.faq ? row.answer : '点击查看全文'}</button></td><td className="source-cell">{row.source || '手动添加'}</td><td><div className="row-actions"><B icon={PencilSimple} aria-label={'编辑：' + (row.question || '整段资料')} disabled={busy} onClick={() => setEntry(row)} /><B icon={ArrowCounterClockwise} aria-label="撤销上次修改" disabled={busy} onClick={() => setConfirm({
+      })}>重建索引</B></div>{uploadNote && <div className={'inline-note' + (uploadNote.error || uploadNote.failed?.length ? ' error' : '')} role={uploadNote.error ? 'alert' : 'status'}>
+      <div>{uploadNote.text}</div>
+      {uploadNote.failed?.map(file => <div key={file.file}>{file.file}：{file.reason}</div>)}
+      {uploadNote.hasEntries && <B tone="quiet" onClick={() => navigate('probe')}>去试问一句</B>}
+    </div>}<LoadState resource={r}>{d => d.rows.length ? <><div className="table-scroll knowledge-table"><table><thead><tr><th>问题 / 资料</th><th>回答</th><th>来源</th><th>操作</th></tr></thead><tbody>{d.rows.map(row => <tr key={row.id}><td><button className="cell-link" onClick={() => setEntry(row)}>{row.faq ? row.question : '[整段资料] ' + row.text}</button></td><td><button className="cell-link secondary-text" onClick={() => setEntry(row)}>{row.faq ? row.answer : '点击查看全文'}</button></td><td className="source-cell">{row.source || '手动添加'}</td><td><div className="row-actions"><B icon={PencilSimple} aria-label={'编辑：' + (row.question || '整段资料')} disabled={busy} onClick={() => setEntry(row)} /><B icon={ArrowCounterClockwise} aria-label="撤销上次修改" disabled={busy} onClick={() => setConfirm({
                       action: 'undo',
                       row
                     })} /><B icon={Trash} aria-label="删除资料" disabled={busy} onClick={() => setConfirm({
@@ -595,7 +606,7 @@ function Learned({
     }
   }, [confirm]);
 
-  return <><Header title="学到的" description="检查从人工改稿中学习的语气与事实"><input type="file" accept=".json" hidden ref={importInput} onChange={async e => {
+  return <><Header title="学习记录" description="检查从人工改稿中学习的语气与事实"><input type="file" accept=".json" hidden ref={importInput} onChange={async e => {
         const file = e.target.files?.[0];
         if (!file) return;
         try {
@@ -637,126 +648,250 @@ function Learned({
       }
     }}>{confirm.action === 'fact.accept' ? <div className="form-stack"><label>适用游戏与问题<input value={factQuestion} onChange={e => setFactQuestion(e.target.value)} maxLength={2000}/></label><label>核实后的完整答案<textarea value={factAnswer} onChange={e => setFactAnswer(e.target.value)} rows={6} maxLength={10000}/></label>{confirm.row.review && <p className="muted">需要核实 · {confirm.row.review.needed}</p>}<p>请核对当前游戏、版本、区服及活动条件，确认后立即用于回复。</p></div> : <p>{confirm.row.text || confirm.row.claim}</p>}</Confirm>}</>;
 }
-function Probe({
-  api,
-  run,
-  busy,
-  active
-}) {
+function Probe({ api, run, busy, active }) {
   const r = useResource(api, 'probe', {}, active);
-  const [question, setQuestion] = useState(''),
-    [result, setResult] = useState(null);
-  return <><Header title="试问一句" description="用客户的问法检查资料命中情况，不会向客户发送消息" /><ArchiveBar data={r.data} run={run} busy={busy} refresh={() => {
+  const [question, setQuestion] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function findAnswer(event) {
+    event.preventDefault();
+    if (!r.data || !question.trim() || busy) return;
+    const out = await run('page.probe.run', { archive: r.data.archive, question });
+    if (out) setResult({ ...out, question });
+  }
+
+  return <>
+    <Header title="试问一句" description="输入客户可能问的问题，看看资料库里有没有对应的答案。" />
+    <ArchiveBar data={r.data} run={run} busy={busy} refresh={() => {
       setResult(null);
       r.refresh();
-    }} /><form className="probe-form" onSubmit={async e => {
-      e.preventDefault();
-      const out = await run('page.probe.run', {
-        archive: r.data.archive,
-        question
-      });
-      if (out) setResult({
-        ...out,
-        question
-      });
-    }}><label htmlFor="probe-question">客户可能会问</label><div><input id="probe-question" value={question} onChange={e => setQuestion(e.target.value)} placeholder="例如：账号登录失败应该怎么处理？" /><B type="submit" tone="primary" icon={MagnifyingGlass} disabled={!r.data || !question.trim() || busy}>{busy ? '正在检索…' : '测试检索'}</B></div><p>使用当前资料库与实际检索链路。首次加载本地模型可能需要几秒。</p></form><LoadState resource={r}>{() => result ? <section className="probe-results"><div className="section-heading"><h2>检索结果</h2><span>自动回复阈值 {result.threshold?.toFixed(2)} · {result.hits.length} 条命中</span></div>{result.hits.map((hit, i) => <article className="probe-hit" key={hit.id || i}><div className="hit-number">{i + 1}</div><div><div className="hit-heading"><h3>{hit.question || '整段资料'}</h3><span>{Number(hit.score).toFixed(3)}</span><b>{hit.verdict}</b></div><p>{hit.answer || hit.text}</p><small>来源：{hit.source || '手动添加'}</small></div></article>)}{!result.hits.length && <Empty title="没有检索到匹配资料" text="请补充相关资料，或换一种客户常用的问法" />}</section> : <Empty title="输入一个真实的客户问题" text="查看命中的原文、匹配度与判断结果，确认资料是否覆盖这个问题" />}</LoadState></>;
+    }} />
+    <form className="probe-form" onSubmit={findAnswer}>
+      <label htmlFor="probe-question">客户可能会问</label>
+      <div>
+        <input id="probe-question" value={question} onChange={event => setQuestion(event.target.value)}
+          placeholder="例如：账号登录失败应该怎么处理？"/>
+        <B type="submit" tone="primary" icon={MagnifyingGlass} disabled={!r.data || !question.trim() || busy}>
+          {busy ? '正在查找…' : '查找答案'}
+        </B>
+      </div>
+      <p>只查找当前资料库，不会向客户发送消息。</p>
+    </form>
+    <LoadState resource={r}>{() => result ? <section className="probe-results">
+      <div className="section-heading">
+        <div><h2>找到的资料</h2><p>{result.question}</p></div>
+        <span>{result.hits.length} 条匹配</span>
+      </div>
+      {result.hits.map((hit, index) => <article className="probe-hit" key={hit.id || index}>
+        <div className="hit-number">{index + 1}</div>
+        <div>
+          <div className="hit-heading">
+            <h3>{hit.question || '整段资料'}</h3>
+            <span>匹配度 {Math.round(Number(hit.score) * 100)}%</span>
+          </div>
+          <p>{hit.answer || hit.text}</p>
+          <small>来源：{hit.source || '手动添加'}</small>
+        </div>
+      </article>)}
+      {!result.hits.length && <Empty title="没有找到相关资料" text="换一种客户常用的问法，或到资料库补充对应问答。" />}
+    </section> : <Empty title="输入一个客户问题" text="系统会列出最相关的资料和来源。" />}</LoadState>
+  </>;
 }
-function Settings({
-  api,
-  run,
-  busy,
-  active
-}) {
+function Settings({ api, run, busy, active, navigate }) {
   const r = useResource(api, 'settings', {}, active);
-  const [values, setValues] = useState(null),
-    [saved, setSaved] = useState({}),
-    [models, setModels] = useState([]),
-    [note, setNote] = useState(''),
-    [confirm, setConfirm] = useState(null),
-    [clearSecrets, setClearSecrets] = useState({}),
-    [restart, setRestart] = useState(false),
-    [help, setHelp] = useState(false);
+  const [values, setValues] = useState(null);
+  const [baseline, setBaseline] = useState(null);
+  const [saved, setSaved] = useState({});
+  const [models, setModels] = useState([]);
+  const [note, setNote] = useState('');
+  const [confirm, setConfirm] = useState(null);
+  const [clearSecrets, setClearSecrets] = useState({});
+  const [restart, setRestart] = useState(false);
+  const [help, setHelp] = useState(false);
+
   useEffect(() => {
-    if (r.data && !values) {
+    if (r.data && (!values || values === baseline)) {
       setValues(r.data.values);
+      setBaseline(r.data.values);
       setSaved(r.data.savedSecrets);
-      setModels(r.data.values.llm_model ? [r.data.values.llm_model] : []);
+      setModels([]);
     }
   }, [r.data]);
+
+  const v = values || {};
+  const cleanAddress = address => (address || '').trim().replace(/\/+$/, '');
+  const address = cleanAddress(v.llm_base_url);
+  const providerChanged = address !== cleanAddress(baseline?.llm_base_url);
+  const keepKey = saved.llm_api_key && !providerChanged && !clearSecrets.llm_api_key;
+  const hasKey = !!v.llm_api_key?.trim() || keepKey;
+  const model = v.llm_model?.trim();
+  const modelChanged = providerChanged || model !== baseline?.llm_model || !!v.llm_api_key?.trim();
+  const clearingKey = !!clearSecrets.llm_api_key;
+  const canTest = address && hasKey && model;
+  const channelChanged = ['software', 'wecom_corp_id', 'wecom_open_kfid', 'wecom_kf_secret']
+    .some(key => v[key] !== baseline?.[key]) || !!clearSecrets.wecom_kf_secret;
+  const testOnSave = !clearingKey && (modelChanged || !saved.llm_api_key);
+  const modelHint = !address ? '填写服务商提供的接口地址。'
+    : !hasKey ? '填写此接口对应的 API Key。'
+    : !model ? '输入模型名称，或点击「读取模型」。' : '';
+
   function field(key, value) {
+    setNote('');
+    setValues(old => ({ ...old, [key]: value }));
+    if (key === 'llm_api_key' && value) {
+      setClearSecrets(old => ({ ...old, llm_api_key: false }));
+    }
+  }
+
+  function changeProvider(nextAddress, presetModel = '') {
+    setNote('');
+    setModels([]);
     setValues(old => ({
       ...old,
-      [key]: value,
-      ...(['llm_base_url', 'llm_api_key'].includes(key) ? {
-        llm_model: ''
-      } : {})
+      llm_base_url: nextAddress,
+      llm_model: presetModel,
+      llm_api_key: cleanAddress(nextAddress) === cleanAddress(old.llm_base_url) ? old.llm_api_key : '',
     }));
-    if (['llm_base_url', 'llm_api_key'].includes(key)) setModels([]);
-    if (key === 'llm_base_url') {
-      setSaved(old => ({
-        ...old,
-        llm_api_key: false
-      }));
-      setClearSecrets(old => ({
-        ...old,
-        llm_api_key: true
-      }));
-      setValues(old => ({
-        ...old,
-        llm_api_key: ''
-      }));
-    }
   }
+
   async function action(name, extra = {}) {
-    const out = await run('page.settings.' + name, {
-      values,
-      clearSecrets,
-      ...extra
-    });
-    if (out) {
-      setNote(out.message);
-      if (out.models) {
-        setModels(out.models);
-        setValues(old => ({
-          ...old,
-          llm_model: out.models.includes(old.llm_model) ? old.llm_model : out.models[0] || ''
-        }));
-      }
-      if (name === 'save') {
-        setRestart(out.software_changed);
-        setSaved(old => ({
-          ...old,
-          llm_api_key: !!values.llm_api_key || !clearSecrets.llm_api_key && old.llm_api_key,
-          wecom_kf_secret: !!values.wecom_kf_secret || !clearSecrets.wecom_kf_secret && old.wecom_kf_secret
-        }));
-        setValues(old => ({
-          ...old,
-          llm_api_key: '',
-          wecom_kf_secret: ''
-        }));
-        setClearSecrets({});
-        setConfirm(null);
-      }
+    const out = await run('page.settings.' + name, { values, clearSecrets, ...extra });
+    if (!out) return;
+    setNote(out.message);
+    if (out.models) {
+      setModels([...new Set(out.models)]);
+      setValues(old => ({ ...old, llm_model: old.llm_model || out.models[0] || '' }));
+    }
+    if (name === 'save' || name === 'test_save') {
+      const next = { ...v, llm_base_url: address, llm_model: model || '', llm_api_key: '', wecom_kf_secret: '' };
+      setValues(next);
+      setBaseline(next);
+      setSaved({ llm_api_key: !!hasKey, wecom_kf_secret: !!v.wecom_kf_secret || !!saved.wecom_kf_secret && !clearSecrets.wecom_kf_secret });
+      setClearSecrets({});
+      setRestart(!!out.software_changed);
+      setConfirm(null);
     }
   }
-  const v = values || {};
-  return <><Header title="设置" description="配置模型接口与消息接入方式"><B icon={ArrowClockwise} disabled={busy} onClick={() => {
+
+  function save(event) {
+    event.preventDefault();
+    if (busy || !values) return;
+    if (clearingKey || !hasKey && channelChanged && !modelChanged) setConfirm('empty');
+    else if (testOnSave) {
+      if (canTest) action('test_save');
+    } else action('save');
+  }
+
+  return <>
+    <Header title="设置" description="连接回复模型，选择要接入的聊天软件。">
+      <B tone="quiet" icon={ArrowClockwise} disabled={busy} onClick={() => {
         setValues(null);
+        setClearSecrets({});
         setNote('');
         r.refresh();
-      }}>重新读取</B></Header><LoadState resource={r}>{d => <><div className="settings-layout"><nav className="settings-outline"><a href="#model-settings">模型接口</a><a href="#channel-settings">接入通道</a>{v.software === 'wecom_api' && <a href="#wecom-settings">企业微信凭据</a>}<a href="#application-settings">应用</a></nav><div className="settings-sections"><section id="model-settings" className="settings-section"><div className="section-heading"><div><h2>模型接口</h2><p>支持 OpenAI 兼容接口，保存后立即生效</p></div></div><div className="form-stack"><label>服务预设<select aria-label="服务预设" onChange={e => {
-                    const preset = d.presets.find(x => x[0] === e.target.value);
-                    if (preset?.[1]) field('llm_base_url', preset[1]);
-                  }} defaultValue=""><option value="" disabled>选择预设或使用自定义地址</option>{d.presets.map(p => <option key={p[0]}>{p[0]}</option>)}</select></label><label>接口地址<input value={v.llm_base_url || ''} onChange={e => field('llm_base_url', e.target.value)} placeholder="https://api.example.com/v1" autoComplete="off" /></label><label>API Key<input type="password" value={v.llm_api_key || ''} onChange={e => field('llm_api_key', e.target.value)} placeholder={saved.llm_api_key ? '已保存，留空保持当前密钥' : '填写你申请的 API Key'} autoComplete="new-password" /></label>{saved.llm_api_key && <label className="check-label"><input type="checkbox" checked={!!clearSecrets.llm_api_key} onChange={e => setClearSecrets(old => ({
-                    ...old,
-                    llm_api_key: e.target.checked
-                  }))} />清除已保存的模型密钥</label>}<label>模型<div className="input-actions"><select aria-label="模型" value={v.llm_model || ''} onChange={e => field('llm_model', e.target.value)}><option value="">请选择模型</option>{models.map(m => <option key={m}>{m}</option>)}</select><B disabled={busy || !v.llm_base_url} onClick={() => action('models')}>拉取模型</B><B disabled={busy || !v.llm_model} onClick={() => action('test')}>测试连接</B></div></label></div></section><section id="channel-settings" className="settings-section"><div className="section-heading"><div><h2>接入通道</h2><p>切换接入通道需要重启程序</p></div><B onClick={r.refresh}>刷新列表</B></div><div className="channel-options">{d.channels.map(([id, label, available, description]) => <label className={'channel-option' + (v.software === id ? ' chosen' : '')} key={id}><input type="radio" name="software" checked={v.software === id} disabled={!available || busy} onChange={() => field('software', id)} /><span><strong>{label}</strong><small>{description || '可使用'}</small></span>{v.software === id && <CheckCircle size={20} />}</label>)}</div><B tone="quiet" onClick={() => setHelp(true)}>如何接入其他聊天软件？</B></section>{v.software === 'wecom_api' && <section id="wecom-settings" className="settings-section"><div className="section-heading"><div><h2>企业微信「微信客服」凭据</h2><p>使用微信客服应用的 Secret，不是自建应用的 Secret</p></div></div><div className="form-stack">{[['wecom_corp_id', '企业 ID'], ['wecom_kf_secret', '客服 Secret'], ['wecom_open_kfid', '客服账号 ID']].map(([key, label]) => <label key={key}>{label}<input type={key.includes('secret') ? 'password' : 'text'} value={v[key] || ''} autoComplete="off" placeholder={saved[key] ? '已保存，留空保持当前值' : ''} onChange={e => field(key, e.target.value)} /></label>)}<label className="check-label"><input type="checkbox" checked={!!clearSecrets.wecom_kf_secret} onChange={e=>setClearSecrets(old=>({...old,wecom_kf_secret:e.target.checked}))}/>清除已保存的客服 Secret</label><B disabled={busy} onClick={() => action('wecom_test')}>测试企业微信连接</B></div></section>}<section id="application-settings" className="settings-section"><div className="section-heading"><div><h2>应用</h2><p>本机运行 · 退出程序将停止消息采集和自动回复</p></div></div><div className="application-actions"><B disabled={busy} onClick={() => setConfirm('restart')}>重启程序</B><B tone="quiet" disabled={busy} onClick={() => setConfirm('exit')}>退出程序</B></div></section></div></div><footer className="settings-save"><span role="status">{busy ? '正在处理，请稍候…' : note || '未保存的修改不会生效'}</span>{restart && <B onClick={() => setConfirm('restart')}>立即重启</B>}<B icon={FloppyDisk} tone="primary" disabled={busy || !values} onClick={() => {
-            if (!v.llm_api_key && (!saved.llm_api_key || clearSecrets.llm_api_key)) setConfirm('empty');else action('save');
-          }}>保存设置</B></footer></>}</LoadState>{confirm && <Confirm title={confirm === 'empty' ? '保存空模型密钥？' : confirm === 'exit' ? '退出客服程序？' : '重启客服程序？'} busy={busy} danger={confirm === 'exit'} onClose={() => setConfirm(null)} onConfirm={async () => {
-      if (confirm === 'empty') await action('save', {
-        allowEmptyKey: true
-      });else if (await run(confirm)) setConfirm(null);
-    }}>{confirm === 'empty' ? '没有有效密钥时无法启动自动回复。' : confirm === 'exit' ? '程序退出后将停止消息采集和自动回复。' : '当前服务将停止，新窗口启动后需重新点击开始。请先保存设置。'}</Confirm>}{help && <Modal title="接入其他聊天软件" onClose={() => setHelp(false)}><ol className="help-steps"><li>打开并登录需要接入的聊天软件。</li><li>在源码环境运行 scripts/calibrate_chat_app.py，按提示选择窗口和聊天区。</li><li>把生成的标定文件放入程序的 profiles 目录。</li><li>刷新通道列表，选择对应软件，保存并重启。</li></ol><p className="muted">已存在的标定文件会自动出现在通道列表中。</p></Modal>}</>;
+      }}>重新读取</B>
+    </Header>
+    <LoadState resource={r}>{d => <form onSubmit={save}>
+      <div className="settings-layout">
+        <nav className="settings-outline" aria-label="设置分类">
+          <a href="#model-settings">模型连接</a>
+          <a href="#channel-settings">聊天软件</a>
+          {v.software === 'wecom_api' && <a href="#wecom-settings">企业微信凭据</a>}
+          <a href="#application-settings">应用</a>
+        </nav>
+        <div className="settings-sections">
+          <section id="model-settings" className="settings-section">
+            <div className="section-heading">
+              <div><h2>模型连接</h2><p>填好地址、密钥和模型名称，再测试并保存。</p></div>
+              <span className={'table-tag' + (saved.llm_api_key ? ' positive' : '')}>{saved.llm_api_key ? '已配置' : '待配置'}</span>
+            </div>
+            <fieldset className="form-stack settings-fields" disabled={busy}>
+              <label>选择服务商
+                <select aria-label="服务预设" value={d.presets.find(p => p[1] && cleanAddress(p[1]) === address)?.[0] || ''} onChange={event => {
+                  const preset = d.presets.find(p => p[0] === event.target.value);
+                  if (preset) changeProvider(preset[1], preset[2]);
+                }}>
+                  <option value="">自定义接口</option>
+                  {d.presets.filter(p => p[1]).map(p => <option key={p[0]}>{p[0]}</option>)}
+                </select>
+              </label>
+              <label>接口地址
+                <input value={v.llm_base_url || ''} onChange={event => changeProvider(event.target.value)} placeholder="https://api.example.com/v1" inputMode="url" autoComplete="off"/>
+              </label>
+              <label>API Key
+                <input type="password" value={v.llm_api_key || ''} onChange={event => field('llm_api_key', event.target.value)} placeholder={keepKey ? '已保存密钥，留空继续使用' : '粘贴服务商提供的 API Key'} autoComplete="new-password"/>
+              </label>
+              <label htmlFor="settings-model">模型名称</label>
+              <div className="input-actions model-input-actions">
+                <input id="settings-model" value={v.llm_model || ''} onChange={event => field('llm_model', event.target.value)} placeholder="例如 deepseek-chat" autoComplete="off"/>
+                <B disabled={!address || !hasKey} onClick={() => action('models')}>读取模型</B>
+              </div>
+              {!!models.length && <label>已读取的模型
+                <select value={models.includes(v.llm_model) ? v.llm_model : ''} onChange={event => field('llm_model', event.target.value)}>
+                  <option value="" disabled>选择一个模型</option>
+                  {models.map(m => <option key={m}>{m}</option>)}
+                </select>
+              </label>}
+              <div className="model-help">
+                <p>{models.length ? '可从列表选择，也可直接输入模型名称。' : '知道模型名称时可以直接输入，无需读取列表。'}</p>
+                <B tone="quiet" disabled={!canTest} onClick={() => action('test')}>只测试连接</B>
+              </div>
+              {saved.llm_api_key && !providerChanged && <details className="model-advanced">
+                <summary>管理已保存的密钥</summary>
+                <label className="check-label">
+                  <input type="checkbox" checked={clearingKey} onChange={event => {
+                    field('llm_api_key', '');
+                    setClearSecrets(old => ({ ...old, llm_api_key: event.target.checked }));
+                  }}/>清除已保存的模型密钥
+                </label>
+              </details>}
+            </fieldset>
+          </section>
+          <section id="channel-settings" className="settings-section">
+            <div className="section-heading"><div><h2>聊天软件</h2><p>选择客户消息从哪里接入。更换后需要重启。</p></div></div>
+            <fieldset className="channel-options settings-fields" disabled={busy}>
+              {d.channels.map(([id, label, available, description]) => <label className={'channel-option' + (v.software === id ? ' chosen' : '')} key={id}>
+                <input type="radio" name="software" checked={v.software === id} disabled={!available} onChange={() => field('software', id)}/>
+                <span><strong>{label}</strong><small>{description || '可使用'}</small></span>
+                {v.software === id && <CheckCircle size={20}/>}
+              </label>)}
+            </fieldset>
+            <B tone="quiet" onClick={() => setHelp(true)}>如何接入其他聊天软件？</B>
+          </section>
+          {v.software === 'wecom_api' && <section id="wecom-settings" className="settings-section">
+            <div className="section-heading"><div><h2>企业微信「微信客服」凭据</h2><p>使用微信客服应用的 Secret。</p></div></div>
+            <fieldset className="form-stack settings-fields" disabled={busy}>
+              {[['wecom_corp_id', '企业 ID'], ['wecom_kf_secret', '客服 Secret'], ['wecom_open_kfid', '客服账号 ID']].map(([key, label]) => (
+                <label key={key}>{label}<input type={key === 'wecom_kf_secret' ? 'password' : 'text'} value={v[key] || ''} autoComplete="off" placeholder={saved[key] ? '已保存，留空继续使用' : '填写' + label} onChange={event => field(key, event.target.value)}/></label>
+              ))}
+              {saved.wecom_kf_secret && <label className="check-label"><input type="checkbox" checked={!!clearSecrets.wecom_kf_secret} onChange={event => setClearSecrets(old => ({ ...old, wecom_kf_secret: event.target.checked }))}/>清除已保存的客服 Secret</label>}
+              <B disabled={!v.wecom_corp_id || !v.wecom_kf_secret && (!saved.wecom_kf_secret || clearSecrets.wecom_kf_secret)} onClick={() => action('wecom_test')}>测试企业微信连接</B>
+            </fieldset>
+          </section>}
+          <section id="application-settings" className="settings-section">
+            <div className="section-heading"><div><h2>应用</h2><p>退出软件会停止收取客户消息和自动回复。</p></div></div>
+            <div className="application-actions"><B disabled={busy} onClick={() => setConfirm('restart')}>重启程序</B><B tone="quiet" disabled={busy} onClick={() => setConfirm('exit')}>退出程序</B></div>
+          </section>
+        </div>
+      </div>
+      <footer className="settings-save">
+        <span role="status">{busy ? '正在处理，请稍候…' : note || (!clearingKey && testOnSave ? modelHint || '连接通过后会自动保存。' : '更改后请保存设置。')}</span>
+        {restart ? <B onClick={() => setConfirm('restart')}>立即重启</B>
+          : note && !modelChanged && saved.llm_api_key && <B tone="quiet" onClick={() => navigate('knowledge')}>打开资料库</B>}
+        <B type="submit" icon={FloppyDisk} tone="primary" disabled={busy || !values || testOnSave && !canTest && !(channelChanged && !modelChanged)}>
+          {testOnSave && !(channelChanged && !modelChanged && !hasKey) ? '测试并保存' : '保存设置'}
+        </B>
+      </footer>
+    </form>}</LoadState>
+    {confirm && <Confirm title={confirm === 'empty' ? '没有模型密钥，仍要保存？' : confirm === 'exit' ? '退出客服程序？' : '重启客服程序？'} busy={busy} danger={confirm === 'exit'} onClose={() => setConfirm(null)} onConfirm={async () => {
+      if (confirm === 'empty') await action('save', { allowEmptyKey: true });
+      else if (await run(confirm)) setConfirm(null);
+    }}>{confirm === 'empty' ? '可以先保存其他设置。连接模型后才能启动自动回复。' : confirm === 'exit' ? '程序退出后将停止消息采集和自动回复。' : '重启后需要重新启动自动回复。请先保存设置。'}</Confirm>}
+    {help && <Modal title="如何接入其他聊天软件？" onClose={() => setHelp(false)}>
+      <p>如需接入列表外的软件，请让管理员完成窗口标定。标定后可在「聊天软件」里选择。</p>
+      <details className="model-advanced"><summary>管理员操作</summary><ol className="help-steps"><li>打开并登录要接入的软件。</li><li>运行 scripts/calibrate_chat_app.py，按提示选择窗口和聊天区。</li><li>把生成的文件放入程序的 profiles 目录，再重新读取设置。</li></ol></details>
+    </Modal>}
+  </>;
 }
 const components = {
   all: History,
@@ -772,8 +907,10 @@ const components = {
 export function PageRouter(props) {
   const [visited, setVisited] = useState([props.page]);
   useEffect(() => setVisited(old => old.includes(props.page) ? old : [...old, props.page]), [props.page]);
-  return <section className="page-area" hidden={props.page === 'pending'}><div className="page-topline"><BookOpen size={18} /><span>{names[props.page]}</span><span className="page-local">本机工作区</span></div>{props.demo && <div className="preview-note">演示模式 · 示例数据不会写入真实配置或资料库</div>}{props.connectionError && <div className="notice error">{props.connectionError}</div>}<div className="page-content">{visited.map(page => {
+  const group = ['all', 'replied'].includes(props.page) ? '消息处理'
+    : ['settings', 'dashboard'].includes(props.page) ? '管理' : '资料与 AI';
+  return <section className="page-area" hidden={props.page === 'pending'}><div className="page-topline"><span>{group}</span><CaretRight size={13} aria-hidden="true"/><span aria-current="page">{pageNames[props.page]}</span></div>{props.demo && <div className="preview-note">演示模式 · 示例数据不会写入真实配置或资料库</div>}{props.connectionError && <div className="notice error">{props.connectionError}</div>}<div className="page-content">{visited.map(page => {
         const Component = components[page];
-        return Component && <div key={page} hidden={props.page !== page} className={page === 'assistant' ? 'page-view assistant-view' : 'page-view'}><PageBoundary title={names[page]}><Component {...props} page={page} active={props.page === page} /></PageBoundary></div>;
+        return Component && <div key={page} hidden={props.page !== page} className={page === 'assistant' ? 'page-view assistant-view' : 'page-view'}><PageBoundary title={pageNames[page]}><Component {...props} page={page} active={props.page === page} /></PageBoundary></div>;
       })}</div></section>;
 }

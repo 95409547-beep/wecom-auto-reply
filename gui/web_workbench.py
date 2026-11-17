@@ -213,7 +213,8 @@ class WindowAdapter:
         w = self.window
         # Settings are saved by the page worker. Refresh the banner here on the
         # Tk thread once the start guard sees the reloaded configuration.
-        if getattr(w, "_start_guard_banner", False) and w._start_allowed()[0]:
+        can_start, _ = getattr(w, "_start_allowed", lambda: (True, ""))()
+        if getattr(w, "_start_guard_banner", False) and can_start:
             w.set_banner("")
         from rag import archives, reply_learning
         try:
@@ -222,6 +223,7 @@ class WindowAdapter:
         except (OSError, ValueError):
             reviews = []
         return {"items": getattr(w, "_web_pending_rows", []), "paused": w.is_paused(),
+                "canStart": can_start,
                 "banner": getattr(w, "_web_banner", {"text": "", "level": "info"}),
                 "demo": False, "connected": not w._should_exit,
                 "pageBusy": bool(getattr(w, "_web_page_busy", False)),
@@ -401,6 +403,8 @@ def demo(port=4181):
         if action == "native":
             return "演示模式：正式工作台会在桌面窗口打开" + command.get("target", "")
         if action == "service":
+            if state["paused"] and not pages.model_saved:
+                raise ValueError("请先连接模型。")
             state["paused"] = not state["paused"]
             return "已切换演示状态，未启动自动回复"
         row = next((r for r in state["items"] if r["key"] == command.get("key")), None)
@@ -413,7 +417,10 @@ def demo(port=4181):
         state["items"].remove(row)
         return "演示操作已完成，未向客户发送消息"
 
-    server = WorkbenchServer(lambda: state, dispatch, port=port, resources=pages.read)
+    def snapshot():
+        return {**state, "canStart": pages.model_saved}
+
+    server = WorkbenchServer(snapshot, dispatch, port=port, resources=pages.read)
     print(server.url, flush=True)
     try:
         while True:

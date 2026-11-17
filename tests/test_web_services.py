@@ -111,6 +111,34 @@ def test_model_test_uses_unsaved_fields_without_writing_config(services, monkeyp
     assert (tmp_path/".env").read_bytes() == before
 
 
+def test_test_and_save_preserves_working_settings_on_connection_failure(services, monkeypatch, tmp_path):
+    from config import settings_store as store
+    from rag import llm_client
+    import dotenv
+
+    values = services.read("settings", {})["values"]
+    values["llm_model"] = "another-model"
+    before = (tmp_path / ".env").read_bytes()
+
+    async def fail(**kwargs):
+        return False, "模型连接失败"
+
+    monkeypatch.setattr(llm_client, "ping", fail)
+    with pytest.raises(ValueError, match="模型连接失败"):
+        services.command("settings.test_save", {"values": values})
+    assert (tmp_path / ".env").read_bytes() == before
+
+    async def succeed(*, settings):
+        assert settings == ("local-test-key", "https://example.com/v1", "another-model")
+        return True, "ok"
+
+    monkeypatch.setattr(llm_client, "ping", succeed)
+    monkeypatch.setattr(dotenv, "load_dotenv", Mock())
+    result = services.command("settings.test_save", {"values": values})
+    assert store.read_current_settings()["llm_model"] == "another-model"
+    assert "local-test-key" not in json.dumps(result)
+
+
 def test_ingest_plan_requires_review_before_writing(services, monkeypatch):
     import base64
     from rag import llm_ingest

@@ -203,19 +203,29 @@ class WebServices:
                 if not ok:
                     raise ValueError(detail)
                 return {"message": detail or "企业微信连接成功"}
-            if action == "settings.save":
+            if action in ("settings.save", "settings.test_save"):
                 if v["llm_api_key"] and not v["llm_model"]:
-                    raise ValueError("请先拉取模型并选择一个模型。")
-                if not v["llm_api_key"] and not p.get("allowEmptyKey"):
-                    raise ValueError("密钥为空，请确认是否保存无模型配置。")
+                    raise ValueError("请选择或输入模型名称。")
+                if not v["llm_api_key"] and (action == "settings.test_save" or not p.get("allowEmptyKey")):
+                    raise ValueError("请填写模型服务的 API Key。")
                 allowed = [sid for sid, _, available, _ in store.software_options() if available]
                 if v["software"] not in allowed:
                     raise ValueError("请选择可用的接入通道。")
+                if action == "settings.test_save":
+                    if not v["llm_base_url"]:
+                        raise ValueError("请填写模型接口地址。")
+                    ok, detail = asyncio.run(llm_client.ping(
+                        settings=(v["llm_api_key"], v["llm_base_url"], v["llm_model"])))
+                    if not ok:
+                        raise ValueError(detail)
                 result = store.save_settings(v)
                 from dotenv import load_dotenv
                 load_dotenv(store.ENV_PATH, override=True)
                 llm_client.reset_client()
-                return {**result, "message": "设置已保存。" + ("接入通道变更需要重启。" if result["software_changed"] else "模型设置已立即生效。")}
+                message = "连接成功，设置已保存。" if action == "settings.test_save" else "设置已保存。"
+                if result["software_changed"]:
+                    message += "接入通道变更需要重启。"
+                return {**result, "message": message}
             raise ValueError("不支持的设置操作")
 
         from rag import archives, kb_tools, kb_history, prompt_store as ps, learn_store as ls

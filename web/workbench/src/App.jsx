@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { FeedbackContext, PageRouter } from './Pages';
+import { FeedbackContext, PageRouter, pageNames } from './Pages';
 import { LearningNotice } from './Assistant';
 import './pages.css';
 import { ChatsCircle, Tray, CheckCircle, BookOpen, ChartBar, GearSix, MagnifyingGlass,
-  CaretDown, ArrowSquareOut, ArrowLeft, X, PaperPlaneTilt, PencilSimple, ArrowCounterClockwise,
+  ArrowSquareOut, ArrowLeft, X, PaperPlaneTilt, PencilSimple, ArrowCounterClockwise,
   Pause, Play, Robot, Info, WarningCircle, Clock, Hash, Prohibit, CaretRight, Check } from '@phosphor-icons/react';
 
 const statusNames = { pending: '待人工确认', queued: '等待发送', failed: '发送失败', unknown: '结果待核实' };
@@ -70,6 +70,9 @@ export function App() {
   const staleDraft = Boolean(savedDraft && selected && savedDraft.revision !== selected.revision);
   const isEditing = selected && (editing[selected.key] || !selected.ai_reply);
   const locked = !connected || Boolean(busy) || selected?.send_status === 'queued';
+  const needsSetup = connected && state?.paused && state?.canStart === false;
+  const serviceLabel = needsSetup ? '配置模型' : state?.paused ? '启动' : '停止';
+  const ServiceIcon = needsSetup ? GearSix : state?.paused ? Play : Pause;
 
   useEffect(() => {
     let alive = true, timer;
@@ -178,20 +181,20 @@ export function App() {
     setEditing(old => ({ ...old, [selected.key]: false }));
   }
   function choose(row) { setSelectedKey(row.key); setMobileDetail(true); }
-  useEffect(() => { document.title = ({pending:'待人工',all:'全部消息',replied:'已回复',assistant:'AI 助手',dashboard:'数据看板',knowledge:'资料库',prompts:'提示词',learned:'学到的',probe:'试问一句',settings:'设置'})[page] + ' · 企业微信智能客服'; }, [page]);
+  useEffect(() => { document.title = pageNames[page] + ' · 企业微信智能客服'; }, [page]);
   function navigate(target) { setNavOpen(false); setPage(target); }
   function native(target) { navigate(({ '全部': 'all', '已回复': 'replied', '数据': 'dashboard', '知识库': 'knowledge', '设置': 'settings' })[target]); }
 
   return <FeedbackContext.Provider value={toast}><div className={'app' + (mobileDetail ? ' show-conversation' : '') + (navOpen ? ' nav-open' : '')}>
     <header className="titlebar"><ChatsCircle size={16} weight="fill"/><span>企业微信智能客服</span>
-      {state?.demo && <span className="demo-label">设计预览 · 演示数据</span>}
+      {state?.demo && <span className="demo-label">演示模式</span>}
       <span className={'connection' + (connected ? ' connected' : '')}><i />{connected ? '本机已连接' : state ? '连接中断' : '正在连接'}</span>
     </header>
 
     <nav className="rail" aria-label="应用导航">
       <button className={'app-icon' + (['pending','all','replied'].includes(page) ? ' current' : '')} aria-label="工作台导航" title="工作台导航" onClick={() => { setPage('pending'); setFilter('all'); setMobileDetail(false); setNavOpen(!navOpen); }}><ChatsCircle size={28} weight="fill"/></button>
       <div className="rail-divider" />
-      <button className={'app-icon' + (['knowledge','prompts','learned','probe'].includes(page) ? ' current' : '')} title="知识库" aria-label="打开知识库" onClick={() => native('知识库')}><BookOpen size={24}/></button>
+      <button className={'app-icon' + (['knowledge','prompts','learned','probe'].includes(page) ? ' current' : '')} title="资料库" aria-label="打开资料库" onClick={() => navigate('knowledge')}><BookOpen size={24}/></button>
       <button className={'app-icon' + (page === 'dashboard' ? ' current' : '')} title="数据看板" aria-label="打开数据看板" onClick={() => native('数据')}><ChartBar size={24}/></button>
       <div className="rail-spacer" />
       <button className={'app-icon settings' + (page === 'settings' ? ' current' : '')} title="设置" aria-label="打开设置" onClick={() => native('设置')}><GearSix size={24}/></button>
@@ -201,19 +204,20 @@ export function App() {
     <aside className="workspace">
       <div className="workspace-heading"><strong>客服工作区</strong><span className="workspace-tag">本地</span></div>
       <div className="workspace-body">
-        <div className="nav-label"><CaretDown size={14}/>工作台</div>
+        <div className="nav-label">消息处理</div>
         <button className={'channel' + (page === 'pending' && filter === 'all' ? ' active' : '')} onClick={() => { navigate('pending'); setFilter('all'); setMobileDetail(false); }}><Tray size={20}/><span>待人工</span><b>{rows.length}</b></button>
         <button className={'channel' + (page === 'all' ? ' active' : '')} onClick={() => native('全部')}><Hash size={20}/><span>全部消息</span></button>
         <button className={'channel' + (page === 'replied' ? ' active' : '')} onClick={() => native('已回复')}><CheckCircle size={20}/><span>已回复</span></button>
-        <div className="nav-label attention-label"><CaretDown size={14}/>处理状态</div>
         <button className={'channel' + (page === 'pending' && filter === 'attention' ? ' active' : '')} onClick={() => { navigate('pending'); setFilter('attention'); setMobileDetail(false); }}><WarningCircle size={20}/><span>需要关注</span>{attention > 0 && <b className="attention-count">{attention}</b>}</button>
-        <p className="nav-hint">发送失败和结果待核实的消息<br/>会显示在这里</p>
-        <div className="nav-label attention-label"><CaretDown size={14}/>管理</div>
-        {[['assistant','AI 助手',Robot],['dashboard','数据看板',ChartBar],['knowledge','资料库',BookOpen],['prompts','提示词',PencilSimple],['learned','学到的',Robot],['probe','试问一句',ChatsCircle],['settings','设置',GearSix]].map(([id,label,Icon]) => <button key={id} className={'channel'+(page===id?' active':'')} onClick={()=>navigate(id)}><Icon size={20}/><span>{label}</span></button>)}
-        <div className="workspace-note"><BookOpen size={18}/><p>回复前，先确认客户的问题<br/><button onClick={() => native('知识库')} disabled={!connected || !!busy}>查阅知识库 <ArrowSquareOut size={12}/></button></p></div>
+        <div className="nav-label attention-label">资料与 AI</div>
+        {[['knowledge',BookOpen],['probe',ChatsCircle],['assistant',Robot],['learned',Robot],['prompts',PencilSimple]].map(([id,Icon]) => <button key={id} className={'channel'+(page===id?' active':'')} aria-current={page === id ? 'page' : undefined} onClick={()=>navigate(id)}><Icon size={20}/><span>{pageNames[id]}</span></button>)}
+        <div className="nav-label attention-label">管理</div>
+        {[['dashboard',ChartBar],['settings',GearSix]].map(([id,Icon]) => <button key={id} className={'channel'+(page===id?' active':'')} aria-current={page === id ? 'page' : undefined} onClick={()=>navigate(id)}><Icon size={20}/><span>{pageNames[id]}</span></button>)}
       </div>
-      <div className="service-panel"><Avatar bot small/><div><strong>自动回复</strong><span><i className={state?.paused ? 'status-dot paused' : 'status-dot'}/>{state?.paused ? '未运行' : '运行中'}</span></div>
-        <IconButton icon={state?.paused ? Play : Pause} label={state?.paused ? '启动自动回复' : '停止自动回复'} onClick={() => command('service')} disabled={!connected || !!busy}/>
+      <div className="service-panel"><Avatar bot small/><div><strong>自动回复</strong><span><i className={state?.paused || !connected ? 'status-dot paused' : 'status-dot'}/>{!connected ? '未连接' : needsSetup ? '待配置' : state?.paused ? '已停止' : '运行中'}</span></div>
+        <button type="button" className="button service-button" aria-label={needsSetup ? '配置模型' : serviceLabel + '自动回复'} disabled={!connected || !!busy} onClick={() => needsSetup ? navigate('settings') : command('service')}>
+          <ServiceIcon size={15}/>{serviceLabel}
+        </button>
       </div>
     </aside>
 
@@ -236,7 +240,10 @@ export function App() {
         {selected ? <><Avatar name={selected.customer_name} small/><div className="customer-heading"><strong>{selected.customer_name}</strong><span>待人工消息</span></div><div className="heading-actions"><span className={'status-label ' + selected.send_status}>{statusNames[selected.send_status]}</span><IconButton icon={Info} label={details ? '收起消息信息' : '查看消息信息'} aria-pressed={details} onClick={() => setDetails(!details)}/></div></> : <><Tray size={22}/><strong>消息处理</strong></>}
       </header>
       {connectionError && <div className="notice error" role="alert"><WarningCircle size={18}/><span>{connectionError}</span></div>}
-      {state?.banner?.text && <div className={'notice ' + state.banner.level}><Info size={18}/><span>{state.banner.text}</span></div>}
+      {needsSetup ? <div className="notice info setup-notice">
+        <Info size={17}/><span><strong>先连接模型。</strong> 保存后导入资料，再用「试问一句」检查答案。</span>
+        <button className="button quiet" onClick={() => navigate('settings')}>去设置 <ArrowSquareOut size={14}/></button>
+      </div> : state?.banner?.text && <div className={'notice ' + state.banner.level}><Info size={18}/><span>{state.banner.text}</span></div>}
       {state?.demo && <div className="preview-note">演示模式，操作仅作用于示例消息，不会发送给客户</div>}
       {selected ? <>
         <div className="compact-info"><span>资料匹配度 {Math.round(selected.confidence * 100)}%</span><span>{guardNames[selected.guard_decision] || selected.guard_decision || '待人工确认'}</span></div>

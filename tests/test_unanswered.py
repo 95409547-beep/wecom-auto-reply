@@ -148,7 +148,7 @@ def test_why_text_is_human_readable():
 
 def test_kb_dialog_has_ranking_button():
     s = _src("gui/kb_dialog.py")
-    assert "最常转人工的问题…" in s
+    assert "常见转人工问题" in s and "command=self._open_unanswered" in s
     assert "open_unanswered(" in s
     # 加进去的时候要把这句话预填进"客户问题"框
     d = _src("gui/unanswered_dialog.py")

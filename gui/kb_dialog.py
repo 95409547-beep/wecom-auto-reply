@@ -227,7 +227,8 @@ class KbDialog:
         c = ls.counts()
         on = ls.enabled(self.cfg)
         self._learn_info.config(
-            text=(f"语气规则 {c['rules']} · 口吻样本 {c['tones']} · "
+            text=(f"学习开关：{'已开启' if on else '已关闭'} · "
+                  f"语气规则 {c['rules']} · 口吻样本 {c['tones']} · "
                   f"待确认 {c['pending_facts']} · 已屏蔽 {c['blocked']} · "
                   f"已采纳 {c['accepts']}"),
             foreground=COLORS["success"] if on else COLORS["warning"])

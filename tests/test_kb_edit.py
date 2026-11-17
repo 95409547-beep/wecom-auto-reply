@@ -354,9 +354,8 @@ def test_kb_list_shows_question_and_answer_columns():
 
 def test_kb_page_has_single_entry_operations():
     s = _src("kb_dialog.py")
-    for label in ("新增一条…", "编辑这条…", "看全文", "撤销上次修改", "删除这条"):
-        assert label in s
-    assert "_kb_view" in s and "_kb_undo" in s and "_kb_delete" in s and "_kb_add" in s
+    for handler in ("_kb_add", "_kb_edit", "_kb_view", "_kb_undo", "_kb_delete"):
+        assert f"command=self.{handler}" in s
 
 
 def test_double_click_opens_full_text():

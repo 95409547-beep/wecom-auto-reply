@@ -344,13 +344,8 @@ def _main_impl():
     else:
         log.info("通道: 截图模式（企业微信桌面端）")
 
-    # 启动横幅：默认未启动，直接告诉用户下一步做什么（不是静默什么都不干）
-    if channel_mode == "wecom_api":
-        window.set_banner("未启动。当前：企业微信 · API 模式。"
-                          "点「开始」运行，或点「设置」重新配置。", level="warn")
-    else:
-        window.set_banner("未启动。当前：企业微信 · 截图模式。"
-                          "点「开始」运行，或点「设置」重新配置。", level="warn")
+    channel_label = "企业微信 · API 模式" if channel_mode == "wecom_api" else "企业微信 · 截图模式"
+    window.set_banner(f"未启动。当前：{channel_label}。确认资料后，可启动自动回复。", level="info")
 
     # ★ 没配模型接口时的提示（守卫本体是模块级的 _can_start，见文件开头）
     #

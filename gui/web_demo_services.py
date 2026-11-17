@@ -30,6 +30,7 @@ class DemoServices:
         self.learned = [dict(id="1", kind="style_rules", label="语气规则", text="确认问题后再索要订单信息，避免一次连续询问多个问题。", hits=8),dict(id="2", kind="tone_samples", label="口吻样本", text="收到，我这边核实后在这里回复您。", hits=5)]
         self.facts = [dict(id="fact1", question="改绑前需要提供什么资料？", claim="请先提供商品链接与订单编号，由人工核查账号的改绑要求。", source="人工改稿", ts="2026-11-16 13:24")]
         self.enabled = True
+        self.model_saved = False
         self.values = dict(llm_base_url="https://api.deepseek.com/v1",llm_model="deepseek-chat",llm_api_key="",wecom_corp_id="",wecom_kf_secret="",wecom_open_kfid="",software="wecom")
 
     def read(self, name, p):
@@ -48,7 +49,7 @@ class DemoServices:
         if name == "unanswered":
             return {**common, "rows": [dict(question="账号换绑后原设备还能登录吗？", reason="缺少对应资料", count=7, last_ts=1794816000, done_ts=None)], "total": 7, "todo": 1}
         if name == "settings":
-            return dict(values=deepcopy(self.values), savedSecrets={"llm_api_key": True}, presets=[("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),("自定义接口", "", "")], channels=[("wecom", "企业微信 · 截图模式", True, "通过桌面窗口采集与回复"),("wecom_api", "企业微信 · 微信客服 API", True, "通过官方 API 接入，无需保持桌面窗口"),("wechat", "个人微信", False, "需要先完成窗口标定")])
+            return dict(values=deepcopy(self.values), savedSecrets={"llm_api_key": self.model_saved}, presets=[("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),("自定义接口", "", "")], channels=[("wecom", "企业微信 · 截图模式", True, "通过桌面窗口采集与回复"),("wecom_api", "企业微信 · 微信客服 API", True, "通过官方 API 接入，无需保持桌面窗口"),("wechat", "个人微信", False, "需要先完成窗口标定")])
         if name == "dashboard":
             return dict(replies=128,auto=96,hold=32,customers=43,pending_now=5,median_reply_seconds=2.4,solve_rate=.75,buckets=[dict(label=f"{9+i}:00",replies=v,auto=int(v*.75)) for i,v in enumerate([3,9,18,12,23,28,21,14])],by_path={"正常直答":96,"资料不足":24,"需要人工判断":8},sample_messages={"正常直答":[r["question"] for r in self.rows]},unanswered_top=[dict(question="账号换绑后原设备还能登录吗？",count=7,reason="缺少对应资料"),dict(question="退款申请需要多久审核？",count=4,reason="政策需人工核实")],export_rows=[dict(ts=r["timestamp"],customer=r["customer"],message=r["message"],source=r["action"],path="正常直答",reply=r["reply"]) for r in self.records])
         raise ValueError("页面不存在")
@@ -74,7 +75,12 @@ class DemoServices:
         elif action in ("fact.accept", "fact.reject"): self.facts = [r for r in self.facts if r["id"] != p["id"]]
         elif action == "probe.run": return dict(hits=[{**deepcopy(self.rows[0]),"score":.86,"verdict":"高于自动回复阈值"}],threshold=.75,message="演示检索完成")
         elif action == "settings.models": return dict(models=["deepseek-chat","deepseek-reasoner"],message="已读取演示模型列表")
-        elif action == "settings.save": self.values.update({**p["values"],"llm_api_key":"","wecom_kf_secret":""})
+        elif action in ("settings.save", "settings.test_save"):
+            values = p["values"]
+            self.model_saved = bool(values.get("llm_api_key")) or (
+                self.model_saved and not p.get("clearSecrets", {}).get("llm_api_key"))
+            self.values.update({**values, "llm_api_key": "", "wecom_kf_secret": ""})
+            message = "演示连接成功，演示设置已保存" if action == "settings.test_save" else "演示设置已保存"
         elif action in ("settings.test", "settings.wecom_test"): message = "演示连接成功（未请求外部接口）"
         elif action in ("exit", "restart"): message = "演示模式不会退出或重启真实程序"
         else: raise ValueError("此演示未模拟该操作，请在正式程序中使用。")
