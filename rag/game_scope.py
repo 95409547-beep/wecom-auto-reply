@@ -32,6 +32,7 @@ def scope_chunks(question: str, chunks: list[str], history=None) -> tuple[list[s
     tagged = [(text, PROJECT_MARK.search(text)) for text in chunks]
     projects = {match[1].strip() for _, match in tagged if match}
     specific = projects - {"通用接待"}
+    specific.update(name for name in KNOWN_GAMES if any(name in text for text in chunks))
     if not specific:
         return chunks, False
     names = set(KNOWN_GAMES) | specific
@@ -50,4 +51,6 @@ def scope_chunks(question: str, chunks: list[str], history=None) -> tuple[list[s
         return [], True
     project = next(iter(selected))
     return [text for text, match in tagged
-            if match and match[1].strip() in (project, "通用接待")], False
+            if (match and match[1].strip() in (project, "通用接待"))
+            or (not match and mentioned(text) == {project})
+            or text.startswith("[当前时间]")], False

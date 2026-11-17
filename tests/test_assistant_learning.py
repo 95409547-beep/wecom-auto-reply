@@ -131,6 +131,8 @@ def test_game_switch_overrides_history_and_ambiguous_question_asks_for_game():
     assert scope_chunks("在哪兑", [x, y], history) == ([x], False)
     assert scope_chunks("在哪兑", [x, y]) == ([], True)
     assert scope_chunks("这个怎么操作", ["普通业务资料"]) == (["普通业务资料"], False)
+    learned = "客户问题: 天仙月客服确认礼包发了\n销售回答: 检查对应角色的邮件。"
+    assert scope_chunks("天仙月礼包在哪看", [learned, y]) == ([learned], False)
 
 
 def test_learning_tone_does_not_claim_knowledge_publication(library, monkeypatch):
